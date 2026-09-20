@@ -172,6 +172,36 @@ body,
   font-weight: 500;
 }
 
+.slider input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.gps {
+  pointer-events: none;
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 12;
+  background: rgba(11, 28, 40, 0.88);
+  border-radius: 12px;
+  padding: 0.4rem;
+  box-shadow: 0 8px 28px rgba(15, 40, 70, 0.25);
+}
+
+.gps canvas {
+  display: block;
+  border-radius: 8px;
+}
+
+.gps-coord {
+  margin: 0.3rem 0 0;
+  color: #cfe8f5;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
 kbd {
   display: inline-block;
   padding: 0.05rem 0.35rem;

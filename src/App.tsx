@@ -1,65 +1,74 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Scene } from './components/Scene'
 import { Hud } from './components/Hud'
+import { GpsDash } from './components/GpsDash'
 import { useKeyboard } from './hooks/useKeyboard'
-import { fetchRoute, getDemoRoute, type RouteResult } from './lib/routing'
+import { polylineToLocal } from './lib/geo'
+import { fetchStreetWorld, getDemoWorld, type StreetWorld } from './lib/osmStreets'
 
-/** First live street: church → railroad club, both real Ridgecrest addresses. */
-const DEFAULT_START = '235 N China Lake Blvd, Ridgecrest, CA'
-const DEFAULT_STOP = '520 S Richmond Rd, Ridgecrest, CA'
+const DEFAULT_DROP = '235 N China Lake Blvd, Ridgecrest, CA'
 
-/**
- * Hometown Drop & Drive — streets in meters, free drive, OSM when the proxy works.
- */
 export default function App() {
   const keys = useKeyboard()
-  const [startAddress, setStartAddress] = useState(DEFAULT_START)
-  const [stopAddress, setStopAddress] = useState(DEFAULT_STOP)
-  const [guidanceOn, setGuidanceOn] = useState(true)
+  const [dropAddress, setDropAddress] = useState(DEFAULT_DROP)
+  const [guidanceOn, setGuidanceOn] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [route, setRoute] = useState<RouteResult>(() => getDemoRoute())
-  const [routeVersion, setRouteVersion] = useState(0)
+  const [world, setWorld] = useState<StreetWorld>(() => getDemoWorld())
+  const [worldVersion, setWorldVersion] = useState(0)
+  const [camDistance, setCamDistance] = useState(14)
+  const [camHeight, setCamHeight] = useState(7)
   const booted = useRef(false)
 
-  const onGo = useCallback(async () => {
+  const onDrop = useCallback(async () => {
     setBusy(true)
     try {
-      const next = await fetchRoute(startAddress, stopAddress)
-      setRoute(next)
-      setRouteVersion((v) => v + 1)
+      const next = await fetchStreetWorld(dropAddress)
+      setWorld(next)
+      setWorldVersion((v) => v + 1)
     } finally {
       setBusy(false)
     }
-  }, [startAddress, stopAddress])
+  }, [dropAddress])
 
   useEffect(() => {
     if (booted.current) return
     booted.current = true
-    void onGo()
-  }, [onGo])
+    void onDrop()
+  }, [onDrop])
+
+  const localWays = useMemo(
+    () => world.ways.map((w) => polylineToLocal(w, world.origin)),
+    [world],
+  )
 
   return (
     <div className="app">
       <div className="canvas-wrap">
         <Scene
           keys={keys}
-          origin={route.origin}
-          polyline={route.polyline}
+          origin={world.origin}
+          ways={world.ways}
           guidanceOn={guidanceOn}
-          routeVersion={routeVersion}
+          routeVersion={worldVersion}
+          camDistance={camDistance}
+          camHeight={camHeight}
         />
       </div>
       <Hud
-        startAddress={startAddress}
-        stopAddress={stopAddress}
+        dropAddress={dropAddress}
         guidanceOn={guidanceOn}
         busy={busy}
-        route={route}
-        onStartChange={setStartAddress}
-        onStopChange={setStopAddress}
+        world={world}
+        camDistance={camDistance}
+        camHeight={camHeight}
+        onDropChange={setDropAddress}
         onGuidanceChange={setGuidanceOn}
-        onGo={onGo}
+        onCamDistance={setCamDistance}
+        onCamHeight={setCamHeight}
+        onGo={onDrop}
       />
+      <GpsDash origin={world.origin} ways={localWays} />
     </div>
   )
 }
+

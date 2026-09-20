@@ -24,6 +24,19 @@ export function latLngToLocal(
   return { x, z }
 }
 
+/** Inverse of latLngToLocal — GPS dash. */
+export function localToLatLng(
+  x: number,
+  z: number,
+  origin: LatLng,
+): LatLng {
+  const { mPerDegLat, mPerDegLng } = metersPerDegree(origin.lat)
+  return {
+    lng: origin.lng + x / mPerDegLng,
+    lat: origin.lat - z / mPerDegLat,
+  }
+}
+
 /** Convert a polyline of lat/lng into local XZ points. */
 export function polylineToLocal(
   points: LatLng[],

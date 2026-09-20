@@ -5,59 +5,50 @@ import { Physics } from '@react-three/rapier'
 import { Ground } from './Ground'
 import { Car } from './Car'
 import { Road } from './Road'
-import { RouteLine } from './RouteLine'
 import { FollowCam } from './FollowCam'
 import type { DriveKeys } from '../hooks/useKeyboard'
 import { polylineToLocal, type LatLng } from '../lib/geo'
-import { pathBounds } from '../lib/roadMesh'
+import { nearestOnNetwork, networkBounds } from '../lib/roadMesh'
 
 type SceneProps = {
   keys: MutableRefObject<DriveKeys>
   origin: LatLng
-  polyline: LatLng[]
+  ways: LatLng[][]
   guidanceOn: boolean
-  /** Bumps when a new route is loaded so the car respawns at the start. */
   routeVersion: number
+  camDistance: number
+  camHeight: number
 }
 
 /**
- * 3D play space. Streets are a metric asphalt ribbon from the OSM/OSRM
- * centerline. The car is free — not locked to the road.
+ * Neighborhood street grid. Car is free — no Autopia walls.
  */
 export function Scene({
   keys,
   origin,
-  polyline,
+  ways,
   guidanceOn,
   routeVersion,
+  camDistance,
+  camHeight,
 }: SceneProps) {
-  const localPath = useMemo(
-    () => polylineToLocal(polyline, origin),
-    [polyline, origin],
+  const localWays = useMemo(
+    () => ways.map((w) => polylineToLocal(w, origin)),
+    [ways, origin],
   )
 
-  const bounds = useMemo(() => pathBounds(localPath), [localPath])
+  const bounds = useMemo(() => networkBounds(localWays), [localWays])
+  const hintPath = localWays[0] ?? []
 
-  const spawn: [number, number, number] = useMemo(() => {
-    if (localPath.length > 0) {
-      return [localPath[0][0], 0.6, localPath[0][2]]
-    }
-    return [0, 0.6, 0]
-  }, [localPath])
-
-  const spawnYaw = useMemo(() => {
-    if (localPath.length < 2) return 0
-    const a = localPath[0]
-    const b = localPath[1]
-    const dx = b[0] - a[0]
-    const dz = b[2] - a[2]
-    return Math.atan2(dx, -dz)
-  }, [localPath])
+  const { spawn, yaw } = useMemo(
+    () => nearestOnNetwork(0, 0, localWays),
+    [localWays],
+  )
 
   return (
     <Canvas shadows dpr={[1, 1.75]} gl={{ antialias: true }}>
       <color attach="background" args={['#87ceeb']} />
-      <fog attach="fog" args={['#cfe8f5', 180, 520]} />
+      <fog attach="fog" args={['#cfe8f5', 220, 640]} />
 
       <PerspectiveCamera makeDefault position={[0, 12, 18]} fov={55} />
       <ambientLight intensity={0.55} />
@@ -67,11 +58,11 @@ export function Scene({
         intensity={1.25}
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
-        shadow-camera-far={400}
-        shadow-camera-left={-120}
-        shadow-camera-right={120}
-        shadow-camera-top={120}
-        shadow-camera-bottom={-120}
+        shadow-camera-far={500}
+        shadow-camera-left={-160}
+        shadow-camera-right={160}
+        shadow-camera-top={160}
+        shadow-camera-bottom={-160}
       />
       <Sky sunPosition={[40, 60, 20]} turbidity={4} rayleigh={1.2} />
 
@@ -84,18 +75,22 @@ export function Scene({
           />
           <Car
             keys={keys}
-            path={localPath}
+            path={hintPath}
             guidanceOn={guidanceOn}
             spawn={spawn}
-            spawnYaw={spawnYaw}
+            spawnYaw={yaw}
             spawnKey={routeVersion}
           />
         </Physics>
-        <Road points={localPath} />
+        <Road ways={localWays} />
       </Suspense>
 
-      <RouteLine points={localPath} visible={guidanceOn} />
-      <FollowCam targetSpawn={spawn} routeVersion={routeVersion} />
+      <FollowCam
+        targetSpawn={spawn}
+        routeVersion={routeVersion}
+        distance={camDistance}
+        height={camHeight}
+      />
     </Canvas>
   )
 }

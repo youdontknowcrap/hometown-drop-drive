@@ -1,31 +1,31 @@
 import type { FormEvent } from 'react'
-import type { RouteResult } from '../lib/routing'
+import type { StreetWorld } from '../lib/osmStreets'
 
 type HudProps = {
-  startAddress: string
-  stopAddress: string
+  dropAddress: string
   guidanceOn: boolean
   busy: boolean
-  route: RouteResult
-  onStartChange: (v: string) => void
-  onStopChange: (v: string) => void
+  world: StreetWorld
+  camDistance: number
+  camHeight: number
+  onDropChange: (v: string) => void
   onGuidanceChange: (on: boolean) => void
+  onCamDistance: (n: number) => void
+  onCamHeight: (n: number) => void
   onGo: () => void
 }
 
-/**
- * Family-friendly overlay: start/stop addresses, Go, and guidance toggle.
- * Pointer-events only on the panel so the canvas still receives clicks.
- */
 export function Hud({
-  startAddress,
-  stopAddress,
+  dropAddress,
   guidanceOn,
   busy,
-  route,
-  onStartChange,
-  onStopChange,
+  world,
+  camDistance,
+  camHeight,
+  onDropChange,
   onGuidanceChange,
+  onCamDistance,
+  onCamHeight,
   onGo,
 }: HudProps) {
   const submit = (e: FormEvent) => {
@@ -36,35 +36,25 @@ export function Hud({
   return (
     <div className="hud">
       <header className="hud-header">
-        <h1>Hometown Drop &amp; Drive</h1>
-        <p className="hud-tagline">Kid-friendly browser driving toy</p>
+        <h1>Hometown Drop & Drive</h1>
+        <p className="hud-tagline">Drive the real streets. No walls.</p>
       </header>
 
       <form className="hud-panel" onSubmit={submit}>
         <label>
-          <span>Start address</span>
+          <span>Drop at</span>
           <input
             type="text"
-            value={startAddress}
-            onChange={(e) => onStartChange(e.target.value)}
+            value={dropAddress}
+            onChange={(e) => onDropChange(e.target.value)}
             placeholder="e.g. 235 N China Lake Blvd, Ridgecrest CA"
-            autoComplete="off"
-          />
-        </label>
-        <label>
-          <span>Stop address</span>
-          <input
-            type="text"
-            value={stopAddress}
-            onChange={(e) => onStopChange(e.target.value)}
-            placeholder="e.g. 520 S Richmond Rd, Ridgecrest CA"
             autoComplete="off"
           />
         </label>
 
         <div className="hud-row">
           <button type="submit" className="btn-go" disabled={busy}>
-            {busy ? 'Routing…' : 'Go'}
+            {busy ? 'Loading streets…' : 'Drop'}
           </button>
           <label className="toggle">
             <input
@@ -72,17 +62,40 @@ export function Hud({
               checked={guidanceOn}
               onChange={(e) => onGuidanceChange(e.target.checked)}
             />
-            <span>Guidance {guidanceOn ? 'ON' : 'OFF'}</span>
+            <span>Hint {guidanceOn ? 'ON' : 'OFF'}</span>
           </label>
         </div>
 
+        <label className="slider">
+          <span>Camera distance {camDistance.toFixed(0)} m</span>
+          <input
+            type="range"
+            min={8}
+            max={40}
+            step={1}
+            value={camDistance}
+            onChange={(e) => onCamDistance(Number(e.target.value))}
+          />
+        </label>
+        <label className="slider">
+          <span>Camera height {camHeight.toFixed(0)} m</span>
+          <input
+            type="range"
+            min={3}
+            max={22}
+            step={1}
+            value={camHeight}
+            onChange={(e) => onCamHeight(Number(e.target.value))}
+          />
+        </label>
+
         <p className="hud-status" role="status">
-          {route.message}
-          {route.source === 'demo' ? ' · demo data' : ' · live OSM'}
+          {world.message}
+          {world.source === 'demo' ? ' · demo data' : ' · live OSM'}
         </p>
         <p className="hud-help">
-          Drive with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows.
-          Streets are real meters. You can leave the road. Guidance is a hint, not rails.
+          <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> drive.
+          Scroll to zoom. Off-road is allowed. GPS is the map, not a route.
         </p>
       </form>
     </div>

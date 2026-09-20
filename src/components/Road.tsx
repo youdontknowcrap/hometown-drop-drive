@@ -1,20 +1,20 @@
 import { useEffect, useMemo } from 'react'
 import { useTexture } from '@react-three/drei'
 import * as THREE from 'three'
-import { buildLanePaint, buildRoadRibbon } from '../lib/roadMesh'
+import {
+  buildLanePaint,
+  buildRoadRibbon,
+  localPathLengthMeters,
+  mergeMeshArrays,
+  type MeshArrays,
+  type XzPoint,
+} from '../lib/roadMesh'
 
 type RoadProps = {
-  points: Array<[number, number, number]>
+  ways: XzPoint[][]
 }
 
-function arraysToGeometry(
-  built: {
-    positions: Float32Array
-    uvs: Float32Array
-    normals: Float32Array
-    indices: Uint32Array
-  } | null,
-): THREE.BufferGeometry | null {
+function arraysToGeometry(built: MeshArrays | null): THREE.BufferGeometry | null {
   if (!built || built.positions.length < 9) return null
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.BufferAttribute(built.positions, 3))
@@ -34,15 +34,31 @@ function prepMaps(textures: THREE.Texture | THREE.Texture[]) {
   list[0].colorSpace = THREE.SRGBColorSpace
 }
 
-/** Textured street ribbon in real meters. Not a collider — drive on or off it. */
-export function Road({ points }: RoadProps) {
+/** All OSM ways as one asphalt mesh. Not a collider — drive on or off it. */
+export function Road({ ways }: RoadProps) {
   const [diff, nor] = useTexture(
     ['/textures/asphalt_01_diff_1k.jpg', '/textures/asphalt_01_nor_gl_1k.jpg'],
     prepMaps,
   )
 
-  const ribbon = useMemo(() => arraysToGeometry(buildRoadRibbon(points)), [points])
-  const paint = useMemo(() => arraysToGeometry(buildLanePaint(points)), [points])
+  const ribbon = useMemo(() => {
+    const parts: MeshArrays[] = []
+    for (const way of ways) {
+      const mesh = buildRoadRibbon(way)
+      if (mesh) parts.push(mesh)
+    }
+    return arraysToGeometry(mergeMeshArrays(parts))
+  }, [ways])
+
+  const paint = useMemo(() => {
+    const parts: MeshArrays[] = []
+    for (const way of ways) {
+      if (localPathLengthMeters(way) < 40) continue
+      const mesh = buildLanePaint(way)
+      if (mesh) parts.push(mesh)
+    }
+    return arraysToGeometry(mergeMeshArrays(parts))
+  }, [ways])
 
   useEffect(
     () => () => {

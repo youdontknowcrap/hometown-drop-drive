@@ -2,7 +2,7 @@
 
 Kid-friendly **browser driving toy**: type a start and stop address, get an OpenStreetMap driving path, and drive with WASD.
 
-The path is extruded into a **real-meter street** (two 12-ft lanes, world-locked asphalt UVs so speed is visible). The car is **not** locked to the road. Guidance is a soft hint plus an optional blue overlay.
+Drop at an address. Load **every OSM street in a 3 km radius** (including backroads / tracks). Drive them. Leave the asphalt if the car can. No Autopia walls. GPS dash + camera sliders.
 
 Web-first prototype (no Unity). Live routing needs `npm run dev` (Vite proxy). Offline / CORS failure falls back to a Ridgecrest demo loop.
 

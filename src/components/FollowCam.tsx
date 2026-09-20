@@ -1,31 +1,49 @@
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 
 type FollowCamProps = {
   targetSpawn: [number, number, number]
   routeVersion: number
+  distance: number
+  height: number
 }
 
 /**
- * Simple chase camera that looks toward world origin of the car each frame
- * by finding the first RigidBody-backed mesh near spawn… Actually we chase
- * by scanning the scene for our car group via a shared name.
- *
- * Simpler approach: lerp camera toward a point behind/above the car by
- * reading the object named "player-car" if present; otherwise hold near spawn.
+ * Chase camera. Distance/height come from the HUD; wheel zooms.
  */
-export function FollowCam({ targetSpawn, routeVersion }: FollowCamProps) {
-  const { camera, scene } = useThree()
+export function FollowCam({
+  targetSpawn,
+  routeVersion,
+  distance,
+  height,
+}: FollowCamProps) {
+  const { camera, scene, gl } = useThree()
   const initialized = useRef(0)
+  const dist = useRef(distance)
+  const h = useRef(height)
+
+  useEffect(() => {
+    dist.current = distance
+    h.current = height
+  }, [distance, height])
+
+  useEffect(() => {
+    const el = gl.domElement
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      dist.current = Math.min(48, Math.max(8, dist.current + e.deltaY * 0.02))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [gl])
 
   useFrame(() => {
-    // Reset when a new route loads
     if (initialized.current !== routeVersion) {
       camera.position.set(
-        targetSpawn[0] + 0,
-        targetSpawn[1] + 10,
-        targetSpawn[2] + 14,
+        targetSpawn[0],
+        targetSpawn[1] + h.current,
+        targetSpawn[2] + dist.current,
       )
       camera.lookAt(targetSpawn[0], targetSpawn[1], targetSpawn[2])
       initialized.current = routeVersion
@@ -36,22 +54,19 @@ export function FollowCam({ targetSpawn, routeVersion }: FollowCamProps) {
 
     const carPos = new THREE.Vector3()
     car.getWorldPosition(carPos)
-
-    // Derive facing from world quaternion
     const q = new THREE.Quaternion()
     car.getWorldQuaternion(q)
-    const back = new THREE.Vector3(0, 0, 1).applyQuaternion(q) // behind car (+Z local)
+    const back = new THREE.Vector3(0, 0, 1).applyQuaternion(q)
     back.y = 0
     back.normalize()
 
     const desired = carPos
       .clone()
-      .add(back.multiplyScalar(12))
-      .add(new THREE.Vector3(0, 7, 0))
+      .add(back.multiplyScalar(dist.current))
+      .add(new THREE.Vector3(0, h.current, 0))
 
     camera.position.lerp(desired, 0.08)
-    const look = carPos.clone().add(new THREE.Vector3(0, 1.2, 0))
-    camera.lookAt(look)
+    camera.lookAt(carPos.x, carPos.y + 1.2, carPos.z)
   })
 
   return null

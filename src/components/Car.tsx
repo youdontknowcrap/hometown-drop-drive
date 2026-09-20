@@ -5,6 +5,9 @@ import { RigidBody, type RapierRigidBody } from '@react-three/rapier'
 import * as THREE from 'three'
 import type { DriveKeys } from '../hooks/useKeyboard'
 import { softSteeringHint } from '../lib/guidance'
+import { carPose } from '../lib/carPose'
+
+const _euler = new THREE.Euler()
 
 type CarProps = {
   keys: MutableRefObject<DriveKeys>
@@ -158,6 +161,13 @@ export function Car({
     const v = rb.linvel()
     rb.setLinvel({ x: v.x * DRAG, y: Math.min(v.y, 0), z: v.z * DRAG }, true)
     rb.setAngvel({ x: 0, y: rb.angvel().y * 0.85, z: 0 }, true)
+
+    const t = rb.translation()
+    _euler.setFromQuaternion(q, 'YXZ')
+    carPose.x = t.x
+    carPose.z = t.z
+    carPose.yaw = _euler.y
+    carPose.ready = true
   })
 
   return (

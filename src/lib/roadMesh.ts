@@ -19,6 +19,72 @@ export function localPathLengthMeters(path: XzPoint[]): number {
   return d
 }
 
+export function networkBounds(ways: XzPoint[][]): {
+  centerX: number
+  centerZ: number
+  size: number
+} {
+  return pathBounds(ways.flat())
+}
+
+export function nearestOnNetwork(
+  x: number,
+  z: number,
+  ways: XzPoint[][],
+): { spawn: XzPoint; yaw: number } {
+  let best = { d: Infinity, x: 0, z: 0, yaw: 0 }
+  for (const way of ways) {
+    for (let i = 0; i < way.length; i++) {
+      const p = way[i]
+      const d = Math.hypot(p[0] - x, p[2] - z)
+      if (d < best.d) {
+        const nxt = way[Math.min(way.length - 1, i + 1)]
+        const prv = way[Math.max(0, i - 1)]
+        const dx = nxt[0] - prv[0]
+        const dz = nxt[2] - prv[2]
+        best = { d, x: p[0], z: p[2], yaw: Math.atan2(dx, -dz) }
+      }
+    }
+  }
+  if (!Number.isFinite(best.d) || best.d === Infinity) {
+    return { spawn: [0, 0.6, 0], yaw: 0 }
+  }
+  return { spawn: [best.x, 0.6, best.z], yaw: best.yaw }
+}
+
+export function mergeMeshArrays(parts: MeshArrays[]): MeshArrays | null {
+  if (!parts.length) return null
+  let pc = 0
+  let ic = 0
+  let lengthMeters = 0
+  for (const p of parts) {
+    pc += p.positions.length
+    ic += p.indices.length
+    lengthMeters += p.lengthMeters
+  }
+  const positions = new Float32Array(pc)
+  const uvs = new Float32Array((pc / 3) * 2)
+  const normals = new Float32Array(pc)
+  const indices = new Uint32Array(ic)
+  let po = 0
+  let uo = 0
+  let io = 0
+  let vertexOffset = 0
+  for (const p of parts) {
+    positions.set(p.positions, po)
+    uvs.set(p.uvs, uo)
+    normals.set(p.normals, po)
+    for (let i = 0; i < p.indices.length; i++) {
+      indices[io + i] = p.indices[i] + vertexOffset
+    }
+    vertexOffset += p.positions.length / 3
+    po += p.positions.length
+    uo += p.uvs.length
+    io += p.indices.length
+  }
+  return { positions, uvs, normals, indices, lengthMeters }
+}
+
 export function pathBounds(path: XzPoint[]): {
   centerX: number
   centerZ: number

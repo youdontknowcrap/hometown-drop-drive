@@ -24,6 +24,14 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/osrm/, ''),
       },
+      '/api/overpass': {
+        target: 'https://overpass-api.de',
+        changeOrigin: true,
+        rewrite: () => '/api/interpreter',
+        headers: {
+          'User-Agent': 'HometownDropDrive/0.1 (family web toy; contact: local-dev)',
+        },
+      },
     },
   },
 })
