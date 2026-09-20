@@ -202,7 +202,7 @@ export function buildLanePaint(
   const dashLen = 3
   const gapLen = 9
   const period = dashLen + gapLen
-  const paintW = 0.12
+  const paintW = 0.18
   const edgeInset = 0.18
   const halfRoad = roadWidth / 2 - edgeInset
 
@@ -300,6 +300,74 @@ export function buildLanePaint(
     traveled += seg
   }
 
+  return {
+    positions: new Float32Array(positions),
+    uvs: new Float32Array(uvs),
+    normals: new Float32Array(normals),
+    indices: new Uint32Array(indices),
+    lengthMeters: traveled,
+  }
+}
+
+
+/**
+ * Dark edge / curb strip just outside the asphalt — helps roads read vs desert.
+ */
+export function buildEdgeCurb(
+  path: XzPoint[],
+  roadWidth: number,
+  curbWidth = 0.35,
+  y = 0.09,
+): MeshArrays | null {
+  if (path.length < 2) return null
+  const half = roadWidth / 2
+  const outer = half + curbWidth
+  const positions: number[] = []
+  const uvs: number[] = []
+  const normals: number[] = []
+  const indices: number[] = []
+
+  const pushStrip = (
+    ax: number,
+    az: number,
+    bx: number,
+    bz: number,
+    inward: number,
+    outward: number,
+  ) => {
+    let tx = bx - ax
+    let tz = bz - az
+    const len = Math.hypot(tx, tz) || 1
+    tx /= len
+    tz /= len
+    const px = -tz
+    const pz = tx
+    const base = positions.length / 3
+    positions.push(
+      ax + px * inward, y, az + pz * inward,
+      ax + px * outward, y, az + pz * outward,
+      bx + px * inward, y, bz + pz * inward,
+      bx + px * outward, y, bz + pz * outward,
+    )
+    uvs.push(0, 0, 1, 0, 0, 1, 1, 1)
+    normals.push(0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0)
+    indices.push(base, base + 1, base + 2, base + 1, base + 3, base + 2)
+  }
+
+  let traveled = 0
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1]
+    const b = path[i]
+    const seg = Math.hypot(b[0] - a[0], b[2] - a[2])
+    if (seg < 0.05) continue
+    // Left curb (positive perpendicular)
+    pushStrip(a[0], a[2], b[0], b[2], half, outer)
+    // Right curb (negative perpendicular) — flip by swapping
+    pushStrip(a[0], a[2], b[0], b[2], -half, -outer)
+    traveled += seg
+  }
+
+  if (positions.length < 9) return null
   return {
     positions: new Float32Array(positions),
     uvs: new Float32Array(uvs),

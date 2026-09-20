@@ -15,6 +15,38 @@ const EMPTY: DriveKeys = {
   right: false,
 }
 
+/** True only when the user is typing in a text field (not range/checkbox). */
+export function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const tag = target.tagName
+  if (tag === 'TEXTAREA' || tag === 'SELECT') return true
+  if (tag === 'INPUT') {
+    const type = (target as HTMLInputElement).type
+    return (
+      type === 'text' ||
+      type === 'search' ||
+      type === 'email' ||
+      type === 'url' ||
+      type === 'tel' ||
+      type === 'password' ||
+      type === 'number' ||
+      type === ''
+    )
+  }
+  return false
+}
+
+/** Blur HUD fields and focus the WebGL canvas so WASD drives again. */
+export function releaseDriveFocus(): void {
+  const active = document.activeElement
+  if (active instanceof HTMLElement) active.blur()
+  const canvas = document.querySelector(
+    '.canvas-wrap canvas',
+  ) as HTMLCanvasElement | null
+  canvas?.focus({ preventScroll: true })
+}
+
 function mapKey(code: string, pressed: boolean, state: DriveKeys): void {
   switch (code) {
     case 'KeyW':
@@ -47,9 +79,14 @@ export function useKeyboard(): MutableRefObject<DriveKeys> {
 
   useEffect(() => {
     const onDown = (e: KeyboardEvent) => {
-      // Don't steal typing from address inputs.
-      const tag = (e.target as HTMLElement | null)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      if (e.code === 'Escape') {
+        releaseDriveFocus()
+        keys.current = { ...EMPTY }
+        return
+      }
+      // Don't steal typing from address inputs — but range/checkbox/button
+      // focus must still allow driving (playtest #17).
+      if (isTypingTarget(e.target)) return
       mapKey(e.code, true, keys.current)
     }
     const onUp = (e: KeyboardEvent) => mapKey(e.code, false, keys.current)

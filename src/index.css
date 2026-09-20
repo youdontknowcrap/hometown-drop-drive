@@ -257,3 +257,18 @@ kbd {
   color: var(--accent-dark) !important;
   font-weight: 700;
 }
+
+
+.hud-status-warn {
+  color: #b26a00 !important;
+  font-weight: 700;
+}
+
+.hud-status-error {
+  color: #c62828 !important;
+  font-weight: 700;
+}
+
+.canvas-wrap canvas:focus {
+  outline: none;
+}

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Scene } from './components/Scene'
 import { Hud, type GpsStatus } from './components/Hud'
 import { GpsDash } from './components/GpsDash'
-import { useKeyboard } from './hooks/useKeyboard'
+import { releaseDriveFocus, useKeyboard } from './hooks/useKeyboard'
 import { localToLatLng, polylineToLocal, type LatLng } from './lib/geo'
 import { carPose } from './lib/carPose'
 import { distanceToPath } from './lib/guidance'
@@ -67,6 +67,8 @@ export default function App() {
       setGpsMessage('')
     } finally {
       setBusy(false)
+      // Playtest #17: leave the address field so WASD drives immediately.
+      releaseDriveFocus()
     }
   }, [dropAddress])
 
@@ -130,7 +132,7 @@ export default function App() {
   }, [])
 
   const localWays = useMemo(
-    () => world.ways.map((w) => polylineToLocal(w, world.origin)),
+    () => world.ways.map((w) => polylineToLocal(w.points, world.origin)),
     [world],
   )
 

@@ -135,9 +135,20 @@ export function Hud({
             />
           </label>
 
-          <p className="hud-status" role="status">
+          <p
+            className={
+              world.source === 'osm' && world.wayCount > 0
+                ? 'hud-status'
+                : 'hud-status hud-status-warn'
+            }
+            role="status"
+          >
             {world.message}
-            {world.source === 'demo' ? ' · demo data' : ' · live OSM'}
+            {world.source === 'demo'
+              ? ' · DEMO (not live OSM)'
+              : world.wayCount > 0
+                ? ` · live OSM (${world.wayCount} ways)`
+                : ' · OSM returned zero ways'}
           </p>
         </form>
 
@@ -194,8 +205,9 @@ export function Hud({
             <kbd>W</kbd>
             <kbd>A</kbd>
             <kbd>S</kbd>
-            <kbd>D</kbd> drive. Set a destination anytime. Drive off the blue
-            line and GPS will reroute. Clear = free drive.
+            <kbd>D</kbd> drive (click the world or press{' '}
+            <kbd>Esc</kbd> after typing). Set a destination anytime. Drive off
+            the blue line and GPS will reroute. Clear = free drive.
           </p>
         </form>
       </div>

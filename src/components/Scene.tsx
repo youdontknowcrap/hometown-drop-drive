@@ -8,14 +8,15 @@ import { Road } from './Road'
 import { RoadContainment } from './RoadContainment'
 import { RouteLine } from './RouteLine'
 import { FollowCam } from './FollowCam'
-import type { DriveKeys } from '../hooks/useKeyboard'
+import { releaseDriveFocus, type DriveKeys } from '../hooks/useKeyboard'
 import { polylineToLocal, type LatLng } from '../lib/geo'
 import { nearestOnNetwork, networkBounds } from '../lib/roadMesh'
+import type { StreetWay } from '../lib/osmStreets'
 
 type SceneProps = {
   keys: MutableRefObject<DriveKeys>
   origin: LatLng
-  ways: LatLng[][]
+  ways: StreetWay[]
   /** Local XZ guidance polyline (empty = no destination). */
   routePath: Array<[number, number, number]>
   /** Soft follow — only when guidance ON and a destination exists. */
@@ -43,9 +44,19 @@ export function Scene({
   camDistance,
   camHeight,
 }: SceneProps) {
-  const localWays = useMemo(
-    () => ways.map((w) => polylineToLocal(w, origin)),
+  const localStreets = useMemo(
+    () =>
+      ways.map((w) => ({
+        points: polylineToLocal(w.points, origin),
+        kind: w.kind,
+        highway: w.highway,
+      })),
     [ways, origin],
+  )
+
+  const localWays = useMemo(
+    () => localStreets.map((s) => s.points),
+    [localStreets],
   )
 
   const bounds = useMemo(() => networkBounds(localWays), [localWays])
@@ -56,7 +67,20 @@ export function Scene({
   )
 
   return (
-    <Canvas shadows dpr={[1, 1.75]} gl={{ antialias: true }}>
+    <Canvas
+      shadows
+      dpr={[1, 1.75]}
+      gl={{ antialias: true }}
+      tabIndex={0}
+      onPointerDown={() => {
+        // Click world → leave HUD text fields so WASD drives (playtest #17).
+        releaseDriveFocus()
+      }}
+      onCreated={({ gl }) => {
+        gl.domElement.tabIndex = 0
+        gl.domElement.style.outline = 'none'
+      }}
+    >
       <color attach="background" args={['#87ceeb']} />
       <fog attach="fog" args={['#cfe8f5', 220, 640]} />
 
@@ -93,7 +117,7 @@ export function Scene({
           />
           <RoadContainment ways={localWays} version={routeVersion} />
         </Physics>
-        <Road ways={localWays} />
+        <Road streets={localStreets} />
         <RouteLine points={routePath} visible={showRoute} />
       </Suspense>
 

@@ -6,6 +6,7 @@
  * (or a start address) → destination. Reroute reuses routeBetween.
  */
 import { polylineLengthMeters, type LatLng } from './geo'
+import { nominatimSearch, osrmRouteResponse } from './osmApi'
 import {
   DEMO_ORIGIN,
   DEMO_POLYLINE,
@@ -42,12 +43,7 @@ type NominatimHit = {
 export async function geocodeAddress(
   query: string,
 ): Promise<LatLng & { label: string }> {
-  const url =
-    `/api/nominatim/search?format=json&limit=1&q=${encodeURIComponent(query)}`
-  const res = await fetch(url, {
-    headers: { Accept: 'application/json' },
-  })
-  if (!res.ok) throw new Error(`Geocode failed (${res.status})`)
+  const res = await nominatimSearch(query)
   const data = (await res.json()) as NominatimHit[]
   if (!data.length) throw new Error(`No results for “${query}”`)
   return {
@@ -58,11 +54,7 @@ export async function geocodeAddress(
 }
 
 async function osrmRoute(start: LatLng, end: LatLng): Promise<LatLng[]> {
-  // OSRM expects lon,lat
-  const coords = `${start.lng},${start.lat};${end.lng},${end.lat}`
-  const url = `/api/osrm/route/v1/driving/${coords}?overview=full&geometries=geojson`
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`OSRM failed (${res.status})`)
+  const res = await osrmRouteResponse(start, end)
   const data = (await res.json()) as {
     code?: string
     routes?: Array<{ geometry: { coordinates: number[][] } }>

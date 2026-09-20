@@ -1,7 +1,7 @@
 /**
- * Offline / CORS-fallback demo route around Ridgecrest, CA.
- * A short scenic loop so the prototype always has a blue guidance line
- * even when Nominatim/OSRM are blocked or offline.
+ * Offline / CORS-fallback demo streets around Ridgecrest, CA.
+ * A short crossroads + loop so demo mode is obvious on screen
+ * (not a single thin ribbon that blends into desert).
  */
 import type { LatLng } from './geo'
 
@@ -9,8 +9,8 @@ import type { LatLng } from './geo'
 export const DEMO_ORIGIN: LatLng = { lat: 35.6225, lng: -117.6709 }
 
 /**
- * Hand-authored polyline (degrees). Not a real street-perfect path —
- * just enough points for a visible driveable guidance ribbon.
+ * Hand-authored polylines (degrees). Not street-perfect —
+ * just enough for a visible driveable ribbon when OSM fails.
  */
 export const DEMO_POLYLINE: LatLng[] = [
   { lat: 35.6225, lng: -117.6709 },
@@ -26,6 +26,27 @@ export const DEMO_POLYLINE: LatLng[] = [
   { lat: 35.6240, lng: -117.6750 },
   { lat: 35.6225, lng: -117.6725 },
   { lat: 35.6225, lng: -117.6709 },
+]
+
+/** North–south demo arterial through the origin (reads as a real boulevard). */
+export const DEMO_ARTERIAL: LatLng[] = [
+  { lat: 35.6180, lng: -117.6709 },
+  { lat: 35.6225, lng: -117.6709 },
+  { lat: 35.6270, lng: -117.6709 },
+  { lat: 35.6325, lng: -117.6709 },
+]
+
+/** East–west cross street + a short dirt spur for contrast. */
+export const DEMO_CROSS: LatLng[] = [
+  { lat: 35.6225, lng: -117.6780 },
+  { lat: 35.6225, lng: -117.6709 },
+  { lat: 35.6225, lng: -117.6635 },
+]
+
+export const DEMO_DIRT: LatLng[] = [
+  { lat: 35.6225, lng: -117.6635 },
+  { lat: 35.6200, lng: -117.6610 },
+  { lat: 35.6185, lng: -117.6590 },
 ]
 
 export const DEMO_START_LABEL = 'Ridgecrest CA (demo start)'
