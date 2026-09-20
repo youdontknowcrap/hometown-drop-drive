@@ -22,6 +22,16 @@
  * Heights stored in the grid are RELATIVE to spawn elevation so the car
  * starts near y≈0 and we don't launch the whole playfield into the sky.
  * Absolute MSL is kept only for teaching / HUD sanity.
+ *
+ * BUG FIX (spawn flat fallback):
+ *   Earlier we only derived the tile AABB from the four *corners* of the
+ *   street bbox. Spawn sits on a road near (0,0) local — usually inside that
+ *   box — but Mercator tile edges + pad math can still leave spawn’s slippy
+ *   tile *outside* the corner-derived range. Then elevAtLatLng returns NaN
+ *   → HUD “Flat fallback — could not sample spawn elevation.” and hills never
+ *   appear. Fix: always union spawn’s tile (+ 8 neighbors) into the fetch set,
+ *   auto-lower zoom if we would exceed MAX_TILES, and if spawn is still NaN
+ *   fall back to the mean of finite tile-center samples before giving up.
  */
 
 import { localToLatLng, type LatLng } from './geo'
@@ -36,12 +46,24 @@ const TILE_SIZE = 256
 /**
  * Zoom for a ~3 km neighborhood. z=12 ≈ 9.5 km/tile at equator;
  * a few tiles cover the Drop bbox without a huge download.
+ * If the bbox needs more than MAX_TILES we step down: 12 → 11 → 10.
  */
 const DEFAULT_ZOOM = 12
+const MIN_ZOOM = 10
 
 /** Soft caps so a wild bbox can't fetch hundreds of tiles. */
 const MAX_TILES = 16
 const GRID_RES = 96
+
+/**
+ * Vertical exaggeration applied to *relative* heights only.
+ *
+ * WHY ~2×? Ridgecrest / desert basin relief over a ~3 km Drop is often only
+ * tens of meters. At 1:1 that reads as a flat parking lot in a toy chase cam.
+ * Doubling makes hills obvious without turning the world into a roller coaster.
+ * Absolute MSL (spawnElevMsl) stays honest for the HUD.
+ */
+const VERTICAL_EXAGGERATION = 2
 
 export type HeightGrid = {
   /** Local-X of the grid's -X/−Z corner (meters). */
@@ -54,7 +76,8 @@ export type HeightGrid = {
   /** Number of samples along Z (rows). */
   rows: number
   /**
-   * Row-major heights[row * cols + col] in meters RELATIVE to spawnElevMsl.
+   * Row-major heights[row * cols + col] in meters RELATIVE to spawnElevMsl
+   * (already scaled by VERTICAL_EXAGGERATION when source === 'terrarium').
    * Flat fallback = all zeros.
    */
   heights: Float32Array
@@ -145,7 +168,6 @@ export function latLngToTile(
   return { x: clampTile(x, z), y: clampTile(y, z) }
 }
 
-
 type TileElev = {
   z: number
   x: number
@@ -154,28 +176,75 @@ type TileElev = {
   elev: Float32Array
 }
 
+/**
+ * Draw a PNG blob onto a canvas and return ImageData.
+ *
+ * Primary path: createImageBitmap (fast, no DOM img).
+ * Fallback: HTMLImageElement + object URL — some environments reject
+ * createImageBitmap on certain blob types; the <img> path still works
+ * through the same Vite /api/terrarium proxy.
+ */
+async function blobToImageData(blob: Blob): Promise<ImageData> {
+  const canvas = document.createElement('canvas')
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) throw new Error('2D canvas unavailable for Terrarium decode')
+
+  try {
+    const bmp = await createImageBitmap(blob)
+    canvas.width = bmp.width
+    canvas.height = bmp.height
+    ctx.drawImage(bmp, 0, 0)
+    const img = ctx.getImageData(0, 0, bmp.width, bmp.height)
+    bmp.close()
+    return img
+  } catch {
+    // Fallback: decode via <img> (same bytes, different browser decoder path).
+    const url = URL.createObjectURL(blob)
+    try {
+      const imgEl = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const im = new Image()
+        im.onload = () => resolve(im)
+        im.onerror = () => reject(new Error('HTMLImageElement failed to decode Terrarium PNG'))
+        im.src = url
+      })
+      canvas.width = imgEl.naturalWidth
+      canvas.height = imgEl.naturalHeight
+      ctx.drawImage(imgEl, 0, 0)
+      return ctx.getImageData(0, 0, canvas.width, canvas.height)
+    } finally {
+      URL.revokeObjectURL(url)
+    }
+  }
+}
+
 async function fetchTile(z: number, x: number, y: number): Promise<TileElev> {
   const res = await fetch(TERRARIUM_URL(z, x, y))
   if (!res.ok) {
     throw new Error(`Terrarium ${z}/${x}/${y} → HTTP ${res.status}`)
   }
   const blob = await res.blob()
-  const bmp = await createImageBitmap(blob)
-  const canvas = document.createElement('canvas')
-  canvas.width = bmp.width
-  canvas.height = bmp.height
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })
-  if (!ctx) throw new Error('2D canvas unavailable for Terrarium decode')
-  ctx.drawImage(bmp, 0, 0)
-  const img = ctx.getImageData(0, 0, bmp.width, bmp.height)
-  bmp.close()
+  const img = await blobToImageData(blob)
 
-  const elev = new Float32Array(bmp.width * bmp.height)
+  const elev = new Float32Array(img.width * img.height)
   for (let i = 0; i < elev.length; i++) {
     const o = i * 4
     elev[i] = decodeTerrariumRgb(img.data[o], img.data[o + 1], img.data[o + 2])
   }
   return { z, x, y, elev }
+}
+
+/** Best-effort fetch — failed tiles are skipped so one 404 doesn't flatten the world. */
+async function tryFetchTile(
+  z: number,
+  x: number,
+  y: number,
+): Promise<TileElev | null> {
+  try {
+    return await fetchTile(z, x, y)
+  } catch (err) {
+    console.warn('[terrarium] tile failed', `${z}/${x}/${y}`, err)
+    return null
+  }
 }
 
 /** Nearest-pixel elev from a fetched tile (tile-local px/py). */
@@ -188,6 +257,7 @@ function sampleTile(tile: TileElev, px: number, py: number): number {
 /**
  * Look up MSL at a lat/lng using the tile set we already fetched.
  * Converts lat/lng → tile fractional pixel, then nearest sample.
+ * Returns NaN if that slippy tile was never loaded (the classic bug).
  */
 function elevAtLatLng(tiles: Map<string, TileElev>, lat: number, lng: number, z: number): number {
   const n = 2 ** z
@@ -205,6 +275,24 @@ function elevAtLatLng(tiles: Map<string, TileElev>, lat: number, lng: number, z:
   return sampleTile(tile, px, py)
 }
 
+/**
+ * Mean MSL of tile centers (and any other finite samples we can grab).
+ * Used when spawn’s exact pixel is missing but *some* tiles decoded.
+ */
+function meanFiniteElev(tiles: Map<string, TileElev>): number {
+  let sum = 0
+  let n = 0
+  for (const tile of tiles.values()) {
+    // Center pixel of each decoded tile — one solid sample per tile.
+    const mid = sampleTile(tile, TILE_SIZE * 0.5, TILE_SIZE * 0.5)
+    if (Number.isFinite(mid)) {
+      sum += mid
+      n++
+    }
+  }
+  return n > 0 ? sum / n : Number.NaN
+}
+
 export type TerrainFetchOpts = {
   origin: LatLng
   /** Local-space AABB of the loaded street network (meters). */
@@ -216,6 +304,56 @@ export type TerrainFetchOpts = {
   spawnX: number
   spawnZ: number
   zoom?: number
+}
+
+/**
+ * Build the set of slippy-map tile indices covering the bbox *and* spawn.
+ *
+ * LEARNING NOTE: Never trust AABB corners alone. Web-Mercator Y is nonlinear
+ * in latitude, and spawn can sit just across a tile boundary from every
+ * corner’s tile. Always union spawn (+ neighbors) into the set.
+ */
+function collectTileKeys(
+  corners: LatLng[],
+  spawnLl: LatLng,
+  z: number,
+): { keys: Set<string>; tMinX: number; tMaxX: number; tMinY: number; tMaxY: number } {
+  let tMinX = Infinity
+  let tMaxX = -Infinity
+  let tMinY = Infinity
+  let tMaxY = -Infinity
+
+  const bump = (lat: number, lng: number) => {
+    const t = latLngToTile(lat, lng, z)
+    tMinX = Math.min(tMinX, t.x)
+    tMaxX = Math.max(tMaxX, t.x)
+    tMinY = Math.min(tMinY, t.y)
+    tMaxY = Math.max(tMaxY, t.y)
+  }
+
+  for (const c of corners) bump(c.lat, c.lng)
+  bump(spawnLl.lat, spawnLl.lng)
+
+  // Spawn + 8-neighborhood so bilinear edges near tile seams stay covered.
+  const spawnTile = latLngToTile(spawnLl.lat, spawnLl.lng, z)
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const sx = clampTile(spawnTile.x + dx, z)
+      const sy = clampTile(spawnTile.y + dy, z)
+      tMinX = Math.min(tMinX, sx)
+      tMaxX = Math.max(tMaxX, sx)
+      tMinY = Math.min(tMinY, sy)
+      tMaxY = Math.max(tMaxY, sy)
+    }
+  }
+
+  const keys = new Set<string>()
+  for (let ty = tMinY; ty <= tMaxY; ty++) {
+    for (let tx = tMinX; tx <= tMaxX; tx++) {
+      keys.add(`${z}/${tx}/${ty}`)
+    }
+  }
+  return { keys, tMinX, tMaxX, tMinY, tMaxY }
 }
 
 /**
@@ -231,7 +369,7 @@ export async function fetchHeightGrid(opts: TerrainFetchOpts): Promise<HeightGri
     maxZ,
     spawnX,
     spawnZ,
-    zoom = DEFAULT_ZOOM,
+    zoom: startZoom = DEFAULT_ZOOM,
   } = opts
 
   const pad = 40
@@ -246,58 +384,69 @@ export async function fetchHeightGrid(opts: TerrainFetchOpts): Promise<HeightGri
   const centerZ = (oMinZ + oMaxZ) * 0.5
 
   try {
-    // Corners of the padded bbox → lat/lng → tile index range.
+    // Corners of the padded bbox → lat/lng (not the only tiles we fetch!).
     const corners: LatLng[] = [
       localToLatLng(oMinX, oMinZ, origin),
       localToLatLng(oMaxX, oMinZ, origin),
       localToLatLng(oMinX, oMaxZ, origin),
       localToLatLng(oMaxX, oMaxZ, origin),
     ]
-    let tMinX = Infinity
-    let tMaxX = -Infinity
-    let tMinY = Infinity
-    let tMaxY = -Infinity
-    for (const c of corners) {
-      const t = latLngToTile(c.lat, c.lng, zoom)
-      tMinX = Math.min(tMinX, t.x)
-      tMaxX = Math.max(tMaxX, t.x)
-      tMinY = Math.min(tMinY, t.y)
-      tMaxY = Math.max(tMaxY, t.y)
-    }
+    const spawnLl = localToLatLng(spawnX, spawnZ, origin)
 
-    const tileCount =
-      (tMaxX - tMinX + 1) * (tMaxY - tMinY + 1)
-    if (tileCount > MAX_TILES) {
+    // Auto-lower zoom until the tile set fits under MAX_TILES.
+    // Old code returned flat immediately when tileCount > 16 — hills gone.
+    let zoom = startZoom
+    let plan = collectTileKeys(corners, spawnLl, zoom)
+    while (plan.keys.size > MAX_TILES && zoom > MIN_ZOOM) {
+      zoom -= 1
+      plan = collectTileKeys(corners, spawnLl, zoom)
+    }
+    if (plan.keys.size > MAX_TILES) {
       return flatHeightGrid(
         centerX,
         centerZ,
         size,
-        `Flat fallback — bbox needs ${tileCount} tiles (cap ${MAX_TILES}).`,
+        `Flat fallback — even z${zoom} needs ${plan.keys.size} tiles (cap ${MAX_TILES}).`,
       )
     }
 
     const tiles = new Map<string, TileElev>()
     const jobs: Promise<void>[] = []
-    for (let ty = tMinY; ty <= tMaxY; ty++) {
-      for (let tx = tMinX; tx <= tMaxX; tx++) {
-        jobs.push(
-          fetchTile(zoom, tx, ty).then((tile) => {
-            tiles.set(`${zoom}/${tx}/${ty}`, tile)
-          }),
-        )
-      }
+    for (const key of plan.keys) {
+      const [, xs, ys] = key.split('/')
+      const tx = Number(xs)
+      const ty = Number(ys)
+      jobs.push(
+        tryFetchTile(zoom, tx, ty).then((tile) => {
+          if (tile) tiles.set(`${zoom}/${tx}/${ty}`, tile)
+        }),
+      )
     }
     await Promise.all(jobs)
 
-    const spawnLl = localToLatLng(spawnX, spawnZ, origin)
-    const spawnElevMsl = elevAtLatLng(tiles, spawnLl.lat, spawnLl.lng, zoom)
-    if (!Number.isFinite(spawnElevMsl)) {
+    if (tiles.size === 0) {
       return flatHeightGrid(
         centerX,
         centerZ,
         size,
-        'Flat fallback — could not sample spawn elevation.',
+        `Flat fallback — 0/${plan.keys.size} Terrarium tiles decoded (proxy/CORS?).`,
       )
+    }
+
+    // Prefer exact spawn sample; if that tile missed, use mean of tile centers.
+    let spawnElevMsl = elevAtLatLng(tiles, spawnLl.lat, spawnLl.lng, zoom)
+    let spawnNote = ''
+    if (!Number.isFinite(spawnElevMsl)) {
+      spawnElevMsl = meanFiniteElev(tiles)
+      spawnNote = ' (spawn≈tile-mean)'
+      if (!Number.isFinite(spawnElevMsl)) {
+        return flatHeightGrid(
+          centerX,
+          centerZ,
+          size,
+          `Flat fallback — ${tiles.size} tiles fetched but no finite elev samples.`,
+        )
+      }
     }
 
     // Build a regular local grid; sample each cell from the tile set.
@@ -309,6 +458,7 @@ export async function fetchHeightGrid(opts: TerrainFetchOpts): Promise<HeightGri
     const heights = new Float32Array(cols * rows)
     let minRel = Infinity
     let maxRel = -Infinity
+    let finiteSamples = 0
 
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
@@ -316,7 +466,10 @@ export async function fetchHeightGrid(opts: TerrainFetchOpts): Promise<HeightGri
         const z = originZ + r * cellSize
         const ll = localToLatLng(x, z, origin)
         const msl = elevAtLatLng(tiles, ll.lat, ll.lng, zoom)
-        const rel = Number.isFinite(msl) ? msl - spawnElevMsl : 0
+        // Relative to spawn so the car stays near y≈0; then exaggerate for cam.
+        const relRaw = Number.isFinite(msl) ? msl - spawnElevMsl : 0
+        if (Number.isFinite(msl)) finiteSamples++
+        const rel = relRaw * VERTICAL_EXAGGERATION
         heights[r * cols + c] = rel
         if (rel < minRel) minRel = rel
         if (rel > maxRel) maxRel = rel
@@ -327,6 +480,16 @@ export async function fetchHeightGrid(opts: TerrainFetchOpts): Promise<HeightGri
       minRel = 0
       maxRel = 0
     }
+
+    const relief = maxRel - minRel
+    // HUD: tiles fetched, zoom, relief — so Joey can see data actually landed.
+    const message =
+      `Terrarium/SRTM z${zoom} · ${tiles.size}/${plan.keys.size} tiles` +
+      ` · spawn ${spawnElevMsl.toFixed(0)} m MSL${spawnNote}` +
+      ` · relief ${relief.toFixed(0)} m (${VERTICAL_EXAGGERATION}×)` +
+      (finiteSamples < cols * rows
+        ? ` · ${finiteSamples}/${cols * rows} grid hits`
+        : '')
 
     return {
       originX,
@@ -339,7 +502,7 @@ export async function fetchHeightGrid(opts: TerrainFetchOpts): Promise<HeightGri
       minRel,
       maxRel,
       source: 'terrarium',
-      message: `Terrarium/SRTM z${zoom} · spawn ${spawnElevMsl.toFixed(0)} m MSL · relief ${(maxRel - minRel).toFixed(0)} m`,
+      message,
     }
   } catch (err) {
     const why = err instanceof Error ? err.message : 'unknown error'
@@ -376,4 +539,3 @@ export function waysBounds(ways: Array<Array<[number, number, number]>>): {
   }
   return { minX, maxX, minZ, maxZ }
 }
-
