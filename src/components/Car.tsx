@@ -86,7 +86,9 @@ useGLTF.preload(WHEEL)
  * Longitudinal: signed-speed along forward (see longitudinal.ts).
  * Horizontal linvel is authored each frame; vertical (y) is left to Rapier
  * so ground contact can push up — never clamp y≤0 (that caused fall-through).
- * Steer angle springs to the input and returns to 0 on release (no sticky yaw).
+ * Steer: stick/key target is proportional; angle lerps toward it (hold mid =
+ * hold arc). Stick slop + strong spring-return centers on release; angvel
+ * cleared every frame so we never keep yawing after let-go.
  */
 export function Car({
   keys,
