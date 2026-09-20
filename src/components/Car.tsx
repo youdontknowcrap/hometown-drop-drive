@@ -11,6 +11,7 @@ import {
   stepSignedSpeedMph,
   steerScale,
 } from '../lib/longitudinal'
+import { sampleDriveInput, stepSteerAngle } from '../lib/driveInput'
 
 const _euler = new THREE.Euler()
 const _forward = new THREE.Vector3()
@@ -27,8 +28,11 @@ type CarProps = {
   spawnKey: number
 }
 
-/** Base yaw rate (rad/s) before speed scaling — still snappy at mid speed. */
+/** Base yaw rate (rad/s) at full steer before speed scaling. */
 const TURN = 2.8
+
+/** Keep the body above the ground plane if contact ever slips. */
+const MIN_Y = 0.45
 
 const SEDAN = '/models/kenney-car/sedan.glb'
 const WHEEL = '/models/kenney-car/wheel-default.glb'
@@ -77,11 +81,12 @@ useGLTF.preload(SEDAN)
 useGLTF.preload(WHEEL)
 
 /**
- * Kenney CC0 sedan with arcade WASD driving.
+ * Kenney CC0 sedan with arcade WASD + gamepad driving.
  *
- * Longitudinal: signed-speed / target-speed along forward (see longitudinal.ts).
- * We set horizontal linvel from that each frame — no impulse+drag fight.
- * Soft follow only when guidance ON and a GPS destination path is set.
+ * Longitudinal: signed-speed along forward (see longitudinal.ts).
+ * Horizontal linvel is authored each frame; vertical (y) is left to Rapier
+ * so ground contact can push up — never clamp y≤0 (that caused fall-through).
+ * Steer angle springs to the input and returns to 0 on release (no sticky yaw).
  */
 export function Car({
   keys,
@@ -94,10 +99,13 @@ export function Car({
   const body = useRef<RapierRigidBody>(null)
   /** Authoritative signed speed (mph) along forward. Positive = nose direction. */
   const signedMph = useRef(0)
+  /** Smoothed steer −1..+1; springs to 0 when input released. */
+  const steerAngle = useRef(0)
 
   // Fresh drop / respawn — zero authored speed with the new RigidBody.
   useEffect(() => {
     signedMph.current = 0
+    steerAngle.current = 0
     carPose.speedMph = 0
   }, [spawnKey])
 
@@ -105,7 +113,7 @@ export function Car({
     const rb = body.current
     if (!rb) return
 
-    const k = keys.current
+    const input = sampleDriveInput(keys.current)
     const rot = rb.rotation()
     _quat.set(rot.x, rot.y, rot.z, rot.w)
 
@@ -114,49 +122,54 @@ export function Car({
     if (_forward.lengthSq() < 1e-8) return
     _forward.normalize()
 
-    // --- Longitudinal: integrate signed mph, then write velocity along forward
+    // --- Longitudinal: integrate signed mph, then write horizontal velocity
     signedMph.current = stepSignedSpeedMph(
       signedMph.current,
-      k.forward,
-      k.back,
+      input.forward,
+      input.back,
       dt,
     )
 
     const speedMs = signedMph.current * MPH_TO_MS
     const v = rb.linvel()
+    // Preserve Rapier's y (gravity + ground reaction). Clamping y≤0 killed
+    // contact separation and let the car tunnel through the slab at speed.
     rb.setLinvel(
       {
         x: _forward.x * speedMs,
-        y: Math.min(v.y, 0),
+        y: v.y,
         z: _forward.z * speedMs,
       },
       true,
     )
 
-    // --- Steering (arcade yaw vs speed; dialed down at 110 mph)
-    let steer = 0
-    if (k.left) steer += 1
-    if (k.right) steer -= 1
+    // --- Steering: spring-return angle, yaw rate ∝ angle * speed scale
+    let steerTarget = input.steer
 
     if (guidanceOn && path.length >= 2) {
       const t = rb.translation()
       const hint = softSteeringHint(t.x, t.z, path)
       if (hint && hint.strength > 0.05) {
         const cross = _forward.x * hint.dirZ - _forward.z * hint.dirX
-        steer += cross * hint.strength * 2.2
+        steerTarget = Math.max(
+          -1,
+          Math.min(1, steerTarget + cross * hint.strength * 2.2),
+        )
       }
     }
 
+    steerAngle.current = stepSteerAngle(steerAngle.current, steerTarget, dt)
+
     const absMph = Math.abs(signedMph.current)
     const scale = steerScale(absMph)
-    if (Math.abs(steer) > 0.01 && scale > 0) {
+    if (Math.abs(steerAngle.current) > 0.001 && scale > 0) {
       const sign = signedMph.current >= 0 ? 1 : -1
-      const yaw = steer * TURN * sign * scale * dt
+      const yaw = steerAngle.current * TURN * sign * scale * dt
       _yawQ.setFromAxisAngle(_yawAxis, yaw)
       _quat.multiply(_yawQ)
       rb.setRotation({ x: _quat.x, y: _quat.y, z: _quat.z, w: _quat.w }, true)
 
-      // Re-align velocity to new forward so we don't skid sideways.
+      // Re-align horizontal velocity to new forward so we don't skid sideways.
       _forward.set(0, 0, -1).applyQuaternion(_quat)
       _forward.y = 0
       _forward.normalize()
@@ -164,16 +177,26 @@ export function Car({
       rb.setLinvel(
         {
           x: _forward.x * speedMs,
-          y: Math.min(v2.y, 0),
+          y: v2.y,
           z: _forward.z * speedMs,
         },
         true,
       )
     }
 
+    // Kill residual angular velocity so Rapier doesn't keep spinning us.
     rb.setAngvel({ x: 0, y: 0, z: 0 }, true)
 
+    // Safety net: if we ever slip under the slab, pop back onto it.
     const t = rb.translation()
+    if (t.y < MIN_Y) {
+      rb.setTranslation({ x: t.x, y: MIN_Y, z: t.z }, true)
+      const v3 = rb.linvel()
+      if (v3.y < 0) {
+        rb.setLinvel({ x: v3.x, y: 0, z: v3.z }, true)
+      }
+    }
+
     _euler.setFromQuaternion(_quat, 'YXZ')
     carPose.x = t.x
     carPose.z = t.z
@@ -195,6 +218,8 @@ export function Car({
       linearDamping={0.05}
       angularDamping={2}
       canSleep={false}
+      // Continuous collision — 110 mph ≈ 49 m/s tunnels a thin ground slab.
+      ccd
       enabledRotations={[false, true, false]}
     >
       <group name="player-car">
