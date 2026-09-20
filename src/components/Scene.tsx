@@ -5,6 +5,7 @@ import { Physics } from '@react-three/rapier'
 import { Ground } from './Ground'
 import { Car } from './Car'
 import { Road } from './Road'
+import { RoadContainment } from './RoadContainment'
 import { RouteLine } from './RouteLine'
 import { FollowCam } from './FollowCam'
 import type { DriveKeys } from '../hooks/useKeyboard'
@@ -27,7 +28,8 @@ type SceneProps = {
 }
 
 /**
- * Neighborhood street grid. Car is free — no Autopia walls.
+ * Neighborhood street grid. Soft leave-the-asphalt play, then a hard
+ * ~200 ft corridor wall (RoadContainment) — not curb-hugging Autopia rails.
  * Blue RouteLine is GPS only (set/clear destination in the HUD).
  */
 export function Scene({
@@ -89,6 +91,7 @@ export function Scene({
             spawnYaw={yaw}
             spawnKey={routeVersion}
           />
+          <RoadContainment ways={localWays} version={routeVersion} />
         </Physics>
         <Road ways={localWays} />
         <RouteLine points={routePath} visible={showRoute} />

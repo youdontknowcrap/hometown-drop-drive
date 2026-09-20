@@ -110,7 +110,7 @@ export async function fetchStreetWorld(dropAddress: string): Promise<StreetWorld
       origin: drop,
       ways,
       source: 'osm',
-      message: `${ways.length} streets, ${km} km of road within ${(DROP_RADIUS_M / 1000).toFixed(1)} km. Drive anywhere. No walls.`,
+      message: `${ways.length} streets, ${km} km of road within ${(DROP_RADIUS_M / 1000).toFixed(1)} km. Leave the asphalt a bit — hard stop ~200 ft off-road.`,
       dropLabel: drop.label,
       streetMeters,
       wayCount: ways.length,

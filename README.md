@@ -2,7 +2,7 @@
 
 Kid-friendly **browser driving toy**: type a start and stop address, get an OpenStreetMap driving path, and drive with WASD.
 
-Drop at an address. Load **every OSM street in a 3 km radius** (including backroads / tracks). Drive them. Leave the asphalt if the car can. No Autopia walls. GPS dash + camera sliders.
+Drop at an address. Load **every OSM street in a 3 km radius** (including backroads / tracks). Drive them. Leave the asphalt a bit, then hit a **hard stop ~200 ft** off the road network (not curb-hugging Autopia rails). GPS dash + camera sliders.
 
 Web-first prototype (no Unity). Live routing needs `npm run dev` (Vite proxy). Offline / CORS failure falls back to a Ridgecrest demo loop.
 
@@ -37,7 +37,7 @@ Open the URL Vite prints (usually `http://localhost:5173`). First load tries Cro
 - **Guidance ON** — soft follow the blue GPS line (nearest-segment hint)
 - **Guidance OFF** / no destination — free drive
 
-Drive off the planned path and GPS **reroutes** (debounced). You can drive onto the desert. Ground and road textures repeat in **meters**.
+Drive off the planned path and GPS **reroutes** (debounced). You can drive onto the desert for ~200 ft, then a hard corridor wall stops the car. Ground and road textures repeat in **meters**.
 
 ## Why streets were missing (and what changed)
 
@@ -63,6 +63,7 @@ Now the centerline is a ribbon: 7.2 m wide, length = great-circle meters along t
 - Live OSM street when the proxy works
 - Demo fallback with length shown in the HUD
 - Soft guidance (nearest segment + look-ahead meters), not rails
+- Hard ~200 ft off-road containment from the loaded street grid (Rapier)
 - Set / clear destination + off-course OSRM reroute (Phase 1 GPS)
 
 **Later (issues)**
