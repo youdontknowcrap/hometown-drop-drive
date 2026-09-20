@@ -71,7 +71,8 @@ useGLTF.preload(WHEEL)
 
 /**
  * Kenney CC0 sedan with arcade WASD driving.
- * Guidance ON = soft hint toward the path, not rails.
+ * Soft follow only when guidance ON and a GPS destination path is set.
+ * Hint uses nearest-segment projection (see guidance.ts) — not rails.
  */
 export function Car({
   keys,

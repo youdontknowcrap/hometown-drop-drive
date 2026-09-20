@@ -212,3 +212,48 @@ kbd {
   font-size: 0.75rem;
   font-family: inherit;
 }
+
+.hud-stack {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  width: min(420px, 100%);
+  max-height: calc(100vh - 5.5rem);
+  overflow-y: auto;
+  pointer-events: auto;
+}
+
+.hud-stack .hud-panel {
+  width: 100%;
+  align-self: stretch;
+}
+
+.hud-gps {
+  border: 1.5px solid rgba(2, 136, 209, 0.35);
+}
+
+.btn-clear {
+  font: inherit;
+  font-weight: 700;
+  padding: 0.55rem 1rem;
+  border: 1.5px solid #90a4ae;
+  border-radius: 999px;
+  background: #eceff1;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.btn-clear:hover:not(:disabled) {
+  background: #cfd8dc;
+}
+
+.btn-clear:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.hud-gps-live {
+  color: var(--accent-dark) !important;
+  font-weight: 700;
+}

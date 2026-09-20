@@ -5,6 +5,7 @@ import { Physics } from '@react-three/rapier'
 import { Ground } from './Ground'
 import { Car } from './Car'
 import { Road } from './Road'
+import { RouteLine } from './RouteLine'
 import { FollowCam } from './FollowCam'
 import type { DriveKeys } from '../hooks/useKeyboard'
 import { polylineToLocal, type LatLng } from '../lib/geo'
@@ -14,7 +15,12 @@ type SceneProps = {
   keys: MutableRefObject<DriveKeys>
   origin: LatLng
   ways: LatLng[][]
+  /** Local XZ guidance polyline (empty = no destination). */
+  routePath: Array<[number, number, number]>
+  /** Soft follow — only when guidance ON and a destination exists. */
   guidanceOn: boolean
+  /** Draw the blue GPS line whenever a destination is set. */
+  showRoute: boolean
   routeVersion: number
   camDistance: number
   camHeight: number
@@ -22,12 +28,15 @@ type SceneProps = {
 
 /**
  * Neighborhood street grid. Car is free — no Autopia walls.
+ * Blue RouteLine is GPS only (set/clear destination in the HUD).
  */
 export function Scene({
   keys,
   origin,
   ways,
+  routePath,
   guidanceOn,
+  showRoute,
   routeVersion,
   camDistance,
   camHeight,
@@ -38,7 +47,6 @@ export function Scene({
   )
 
   const bounds = useMemo(() => networkBounds(localWays), [localWays])
-  const hintPath = localWays[0] ?? []
 
   const { spawn, yaw } = useMemo(
     () => nearestOnNetwork(0, 0, localWays),
@@ -75,7 +83,7 @@ export function Scene({
           />
           <Car
             keys={keys}
-            path={hintPath}
+            path={routePath}
             guidanceOn={guidanceOn}
             spawn={spawn}
             spawnYaw={yaw}
@@ -83,6 +91,7 @@ export function Scene({
           />
         </Physics>
         <Road ways={localWays} />
+        <RouteLine points={routePath} visible={showRoute} />
       </Suspense>
 
       <FollowCam

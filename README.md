@@ -31,11 +31,13 @@ Open the URL Vite prints (usually `http://localhost:5173`). First load tries Cro
 - **W / ↑** — accelerate
 - **S / ↓** — reverse / brake
 - **A / ←** · **D / →** — steer
-- **Guidance ON** — blue overlay + soft steering hint (not rails)
-- **Guidance OFF** — free drive, hide the overlay
-- **Go** — geocode + load a new street (respawns the car)
+- **Drop** — geocode + load the OSM street grid (respawns the car)
+- **Set destination** — GPS path from the car to an address (while driving)
+- **Clear** — free drive, hide the blue line
+- **Guidance ON** — soft follow the blue GPS line (nearest-segment hint)
+- **Guidance OFF** / no destination — free drive
 
-You can drive onto the desert. Ground and road textures repeat in **meters**.
+Drive off the planned path and GPS **reroutes** (debounced). You can drive onto the desert. Ground and road textures repeat in **meters**.
 
 ## Why streets were missing (and what changed)
 
@@ -60,13 +62,13 @@ Now the centerline is a ribbon: 7.2 m wide, length = great-circle meters along t
 - Textured desert you can drive on
 - Live OSM street when the proxy works
 - Demo fallback with length shown in the HUD
-- Soft guidance, not rails
+- Soft guidance (nearest segment + look-ahead meters), not rails
+- Set / clear destination + off-course OSRM reroute (Phase 1 GPS)
 
 **Later (issues)**
 
 - OSM buildings (#5) — parked
 - Production geocode proxy (#6)
-- Guidance nearest-segment (#7)
 - Drop / arrive / multi-stop (#8)
 - Streaming the whole map (#4 remainder)
 

@@ -6,12 +6,14 @@ import type { XzPoint } from '../lib/roadMesh'
 type GpsDashProps = {
   origin: LatLng
   ways: XzPoint[][]
+  /** Optional blue GPS route overlay on the mini-map. */
+  route?: XzPoint[]
 }
 
 const SIZE = 168
 
-/** Mini map of the loaded street grid + car blip. */
-export function GpsDash({ origin, ways }: GpsDashProps) {
+/** Mini map of the loaded street grid + car blip + GPS route. */
+export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const coordRef = useRef<HTMLParagraphElement>(null)
 
@@ -32,6 +34,12 @@ export function GpsDash({ origin, ways }: GpsDashProps) {
         minZ = Math.min(minZ, p[2])
         maxZ = Math.max(maxZ, p[2])
       }
+    }
+    for (const p of route) {
+      minX = Math.min(minX, p[0])
+      maxX = Math.max(maxX, p[0])
+      minZ = Math.min(minZ, p[2])
+      maxZ = Math.max(maxZ, p[2])
     }
     if (!Number.isFinite(minX)) {
       minX = -100
@@ -70,6 +78,24 @@ export function GpsDash({ origin, ways }: GpsDashProps) {
         ctx.stroke()
       }
 
+      if (route.length >= 2) {
+        ctx.strokeStyle = '#42a5f5'
+        ctx.lineWidth = 2.4
+        ctx.beginPath()
+        const a = toPx(route[0][0], route[0][2])
+        ctx.moveTo(a.x, a.y)
+        for (let i = 1; i < route.length; i++) {
+          const p = toPx(route[i][0], route[i][2])
+          ctx.lineTo(p.x, p.y)
+        }
+        ctx.stroke()
+        const end = toPx(route[route.length - 1][0], route[route.length - 1][2])
+        ctx.fillStyle = '#ef5350'
+        ctx.beginPath()
+        ctx.arc(end.x, end.y, 4, 0, Math.PI * 2)
+        ctx.fill()
+      }
+
       if (carPose.ready) {
         const p = toPx(carPose.x, carPose.z)
         ctx.save()
@@ -94,7 +120,7 @@ export function GpsDash({ origin, ways }: GpsDashProps) {
     }
     raf = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(raf)
-  }, [origin, ways])
+  }, [origin, ways, route])
 
   return (
     <div className="gps">
