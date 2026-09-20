@@ -272,3 +272,68 @@ kbd {
 .canvas-wrap canvas:focus {
   outline: none;
 }
+
+
+.speedo {
+  pointer-events: none;
+  position: absolute;
+  left: 50%;
+  bottom: 1.25rem;
+  transform: translateX(-50%);
+  z-index: 12;
+  min-width: 140px;
+  padding: 0.55rem 0.9rem 0.45rem;
+  border-radius: 14px;
+  background: rgba(11, 28, 40, 0.88);
+  box-shadow: 0 8px 28px rgba(15, 40, 70, 0.25);
+  color: #e8f6ff;
+  text-align: center;
+}
+
+.speedo-readout {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.35rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.speedo-value {
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+.speedo-unit {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #90caf9;
+  text-transform: uppercase;
+}
+
+.speedo-track {
+  margin-top: 0.4rem;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+
+.speedo-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #29b6f6, #66bb6a);
+  transition: width 0.05s linear;
+}
+
+.speedo-bar[data-dir='rev'] {
+  background: linear-gradient(90deg, #ffb74d, #ef5350);
+}
+
+.speedo-cap {
+  margin: 0.25rem 0 0;
+  font-size: 0.65rem;
+  color: #90a4ae;
+  font-weight: 600;
+}

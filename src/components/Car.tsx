@@ -1,4 +1,4 @@
-import { useMemo, useRef, type MutableRefObject } from 'react'
+import { useEffect, useMemo, useRef, type MutableRefObject } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
 import { RigidBody, type RapierRigidBody } from '@react-three/rapier'
@@ -6,8 +6,17 @@ import * as THREE from 'three'
 import type { DriveKeys } from '../hooks/useKeyboard'
 import { softSteeringHint } from '../lib/guidance'
 import { carPose } from '../lib/carPose'
+import {
+  MPH_TO_MS,
+  stepSignedSpeedMph,
+  steerScale,
+} from '../lib/longitudinal'
 
 const _euler = new THREE.Euler()
+const _forward = new THREE.Vector3()
+const _quat = new THREE.Quaternion()
+const _yawAxis = new THREE.Vector3(0, 1, 0)
+const _yawQ = new THREE.Quaternion()
 
 type CarProps = {
   keys: MutableRefObject<DriveKeys>
@@ -18,10 +27,8 @@ type CarProps = {
   spawnKey: number
 }
 
-const ACCEL = 28
-const TURN = 3.2
-const MAX_SPEED = 42
-const DRAG = 0.98
+/** Base yaw rate (rad/s) before speed scaling — still snappy at mid speed. */
+const TURN = 2.8
 
 const SEDAN = '/models/kenney-car/sedan.glb'
 const WHEEL = '/models/kenney-car/wheel-default.glb'
@@ -71,8 +78,10 @@ useGLTF.preload(WHEEL)
 
 /**
  * Kenney CC0 sedan with arcade WASD driving.
+ *
+ * Longitudinal: signed-speed / target-speed along forward (see longitudinal.ts).
+ * We set horizontal linvel from that each frame — no impulse+drag fight.
  * Soft follow only when guidance ON and a GPS destination path is set.
- * Hint uses nearest-segment projection (see guidance.ts) — not rails.
  */
 export function Car({
   keys,
@@ -83,46 +92,48 @@ export function Car({
   spawnKey,
 }: CarProps) {
   const body = useRef<RapierRigidBody>(null)
+  /** Authoritative signed speed (mph) along forward. Positive = nose direction. */
+  const signedMph = useRef(0)
+
+  // Fresh drop / respawn — zero authored speed with the new RigidBody.
+  useEffect(() => {
+    signedMph.current = 0
+    carPose.speedMph = 0
+  }, [spawnKey])
 
   useFrame((_state, dt) => {
     const rb = body.current
     if (!rb) return
 
     const k = keys.current
-    const linvel = rb.linvel()
     const rot = rb.rotation()
-    const q = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w)
+    _quat.set(rot.x, rot.y, rot.z, rot.w)
 
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(q)
-    forward.y = 0
-    forward.normalize()
+    _forward.set(0, 0, -1).applyQuaternion(_quat)
+    _forward.y = 0
+    if (_forward.lengthSq() < 1e-8) return
+    _forward.normalize()
 
-    let speed = Math.hypot(linvel.x, linvel.z)
-    const movingForward =
-      forward.x * linvel.x + forward.z * linvel.z >= -0.5
+    // --- Longitudinal: integrate signed mph, then write velocity along forward
+    signedMph.current = stepSignedSpeedMph(
+      signedMph.current,
+      k.forward,
+      k.back,
+      dt,
+    )
 
-    if (k.forward) {
-      const boost = Math.max(0, 1 - speed / MAX_SPEED)
-      rb.applyImpulse(
-        {
-          x: forward.x * ACCEL * boost * dt,
-          y: 0,
-          z: forward.z * ACCEL * boost * dt,
-        },
-        true,
-      )
-    }
-    if (k.back) {
-      rb.applyImpulse(
-        {
-          x: -forward.x * ACCEL * 0.6 * dt,
-          y: 0,
-          z: -forward.z * ACCEL * 0.6 * dt,
-        },
-        true,
-      )
-    }
+    const speedMs = signedMph.current * MPH_TO_MS
+    const v = rb.linvel()
+    rb.setLinvel(
+      {
+        x: _forward.x * speedMs,
+        y: Math.min(v.y, 0),
+        z: _forward.z * speedMs,
+      },
+      true,
+    )
 
+    // --- Steering (arcade yaw vs speed; dialed down at 110 mph)
     let steer = 0
     if (k.left) steer += 1
     if (k.right) steer -= 1
@@ -131,43 +142,43 @@ export function Car({
       const t = rb.translation()
       const hint = softSteeringHint(t.x, t.z, path)
       if (hint && hint.strength > 0.05) {
-        const cross = forward.x * hint.dirZ - forward.z * hint.dirX
+        const cross = _forward.x * hint.dirZ - _forward.z * hint.dirX
         steer += cross * hint.strength * 2.2
       }
     }
 
-    speed = Math.hypot(rb.linvel().x, rb.linvel().z)
-    if (Math.abs(steer) > 0.01 && speed > 0.4) {
-      const sign = movingForward ? 1 : -1
-      const yaw = steer * TURN * sign * Math.min(1, speed / 8) * dt
-      const yawQ = new THREE.Quaternion().setFromAxisAngle(
-        new THREE.Vector3(0, 1, 0),
-        yaw,
-      )
-      q.multiply(yawQ)
-      rb.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
+    const absMph = Math.abs(signedMph.current)
+    const scale = steerScale(absMph)
+    if (Math.abs(steer) > 0.01 && scale > 0) {
+      const sign = signedMph.current >= 0 ? 1 : -1
+      const yaw = steer * TURN * sign * scale * dt
+      _yawQ.setFromAxisAngle(_yawAxis, yaw)
+      _quat.multiply(_yawQ)
+      rb.setRotation({ x: _quat.x, y: _quat.y, z: _quat.z, w: _quat.w }, true)
 
-      const v = rb.linvel()
-      const along = forward.x * v.x + forward.z * v.z
+      // Re-align velocity to new forward so we don't skid sideways.
+      _forward.set(0, 0, -1).applyQuaternion(_quat)
+      _forward.y = 0
+      _forward.normalize()
+      const v2 = rb.linvel()
       rb.setLinvel(
         {
-          x: forward.x * along * 0.85 + v.x * 0.15,
-          y: v.y,
-          z: forward.z * along * 0.85 + v.z * 0.15,
+          x: _forward.x * speedMs,
+          y: Math.min(v2.y, 0),
+          z: _forward.z * speedMs,
         },
         true,
       )
     }
 
-    const v = rb.linvel()
-    rb.setLinvel({ x: v.x * DRAG, y: Math.min(v.y, 0), z: v.z * DRAG }, true)
-    rb.setAngvel({ x: 0, y: rb.angvel().y * 0.85, z: 0 }, true)
+    rb.setAngvel({ x: 0, y: 0, z: 0 }, true)
 
     const t = rb.translation()
-    _euler.setFromQuaternion(q, 'YXZ')
+    _euler.setFromQuaternion(_quat, 'YXZ')
     carPose.x = t.x
     carPose.z = t.z
     carPose.yaw = _euler.y
+    carPose.speedMph = signedMph.current
     carPose.ready = true
   })
 
@@ -179,8 +190,10 @@ export function Car({
       position={spawn}
       rotation={[0, spawnYaw, 0]}
       friction={1.4}
-      linearDamping={0.2}
-      angularDamping={1.5}
+      // Drive axis is kinematic from the controller; keep damping low so
+      // Rapier contacts don't sap our authored speed.
+      linearDamping={0.05}
+      angularDamping={2}
       canSleep={false}
       enabledRotations={[false, true, false]}
     >

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Scene } from './components/Scene'
 import { Hud, type GpsStatus } from './components/Hud'
 import { GpsDash } from './components/GpsDash'
+import { Speedo } from './components/Speedo'
 import { releaseDriveFocus, useKeyboard } from './hooks/useKeyboard'
 import { localToLatLng, polylineToLocal, type LatLng } from './lib/geo'
 import { carPose } from './lib/carPose'
@@ -233,6 +234,7 @@ export default function App() {
         onSetDestination={onSetDestination}
         onClearDestination={onClearDestination}
       />
+      <Speedo />
       <GpsDash origin={world.origin} ways={localWays} route={routeLocal} />
     </div>
   )
