@@ -49,11 +49,13 @@ Now the centerline is a ribbon: 7.2 m wide, length = great-circle meters along t
 - three.js / react-three-fiber / drei / rapier
 - Nominatim + OSRM public demo via `/api/nominatim` and `/api/osrm` (dev only)
 - CC0 textures: Poly Haven asphalt + aerial sand; Kenney road tilesheet vendored for later (see `ATTRIBUTION.md`)
+- CC0 car: Kenney Car Kit sedan + wheels (`public/models/kenney-car/`)
 
 ## What works vs later
 
 **Works**
 
+- Kenney CC0 sedan (sports GLB sitting there as a second skin, no picker yet)
 - Metric asphalt ribbon + lane paint
 - Textured desert you can drive on
 - Live OSM street when the proxy works

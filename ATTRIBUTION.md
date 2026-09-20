@@ -11,6 +11,12 @@ CC0 / public-domain assets only. No game rips (GTA, Fortnite, BeamNG, etc.).
 
 Files in `public/textures/` are 1K JPG (web toy size).
 
+## Kenney Car Kit (CC0)
+
+- https://kenney.nl/assets/car-kit
+- Sedan + default wheels in `public/models/kenney-car/` (sedan-sports.glb is a second skin, unused in the picker yet).
+- License: `public/models/kenney-car/LICENSE.txt`
+
 ## Kenney Road Textures (CC0)
 
 - https://kenney.nl/assets/road-textures
