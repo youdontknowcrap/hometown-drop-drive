@@ -127,16 +127,34 @@ export const MAX_STEER_RAD = 0.32
 
 /**
  * Map stick/key −1..+1 → wheel angle δ (radians).
- * At high speed we shrink max lock so (v/L)*tan(δ) stays playable at 110 mph —
- * pure full-lock bicycle at 49 m/s would spin like a top.
+ *
+ * LEARNING NOTE — high-speed desensitization (Joey 2026-09-20):
+ * Real cars and racing games reduce steering gain with speed so the same stick
+ * throw does NOT mean the same yaw rate on the highway. Pure bicycle at 110 mph
+ * (~49 m/s) with parking-lot lock would spin like a top.
+ *
+ * We do two things:
+ *  1) Shrink max lock δ as |v| rises (less wheel angle available).
+ *  2) Soften the stick curve a bit more at speed so mid-deflection is gentler.
+ * Mid-stick still holds a mid arc at whatever lock remains
+ * (radius R = L / tan(δ) for fixed δ).
  */
 export function wheelAngleRad(steerNorm: number, speedMs: number): number {
   const absV = Math.abs(speedMs)
-  // ~full lock near rest; ~1/4 lock by ~80 mph. Mid-stick still holds a mid arc
-  // at whatever lock remains — radius R = L/tan(δ) is constant for fixed δ.
-  const speedEase = 1 / (1 + absV / 28)
-  const maxDelta = MAX_STEER_RAD * (0.35 + 0.65 * speedEase)
-  return Math.max(-1, Math.min(1, steerNorm)) * maxDelta
+  const s = Math.max(-1, Math.min(1, steerNorm))
+
+  // Stronger than the first pass: /18 falls off faster than /28.
+  // At ~0 mph → ~full MAX_STEER_RAD; at ~110 mph → only a small fraction left.
+  const speedEase = 1 / (1 + absV / 18)
+  // Floor 0.12 (was 0.35): highway full-stick is a lane change, not a U-turn.
+  const maxDelta = MAX_STEER_RAD * (0.12 + 0.88 * speedEase)
+
+  // Extra sensitivity taper on the stick itself at speed (keep parking agile).
+  // Near rest: linear. At highway: compress mid-range so small jostles don't yank.
+  const stickEase = 0.55 + 0.45 * speedEase
+  const shaped = Math.sign(s) * Math.pow(Math.abs(s), 1 / stickEase)
+
+  return shaped * maxDelta
 }
 
 /**
