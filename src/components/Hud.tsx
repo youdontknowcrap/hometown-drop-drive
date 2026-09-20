@@ -47,7 +47,7 @@ export function Hud({
             type="text"
             value={startAddress}
             onChange={(e) => onStartChange(e.target.value)}
-            placeholder="e.g. City Hall, Ridgecrest CA"
+            placeholder="e.g. 235 N China Lake Blvd, Ridgecrest CA"
             autoComplete="off"
           />
         </label>
@@ -57,7 +57,7 @@ export function Hud({
             type="text"
             value={stopAddress}
             onChange={(e) => onStopChange(e.target.value)}
-            placeholder="e.g. Library, Ridgecrest CA"
+            placeholder="e.g. 520 S Richmond Rd, Ridgecrest CA"
             autoComplete="off"
           />
         </label>
@@ -82,7 +82,7 @@ export function Hud({
         </p>
         <p className="hud-help">
           Drive with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows.
-          Guidance ON draws a blue line and gives a soft steering hint.
+          Streets are real meters. You can leave the road. Guidance is a hint, not rails.
         </p>
       </form>
     </div>

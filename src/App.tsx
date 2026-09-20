@@ -1,21 +1,25 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Scene } from './components/Scene'
 import { Hud } from './components/Hud'
 import { useKeyboard } from './hooks/useKeyboard'
 import { fetchRoute, getDemoRoute, type RouteResult } from './lib/routing'
 
+/** First live street: church → railroad club, both real Ridgecrest addresses. */
+const DEFAULT_START = '235 N China Lake Blvd, Ridgecrest, CA'
+const DEFAULT_STOP = '520 S Richmond Rd, Ridgecrest, CA'
+
 /**
- * Hometown Drop & Drive — milestone 1 prototype.
- * Address → route → blue guidance → drive with WASD.
+ * Hometown Drop & Drive — streets in meters, free drive, OSM when the proxy works.
  */
 export default function App() {
   const keys = useKeyboard()
-  const [startAddress, setStartAddress] = useState('')
-  const [stopAddress, setStopAddress] = useState('')
+  const [startAddress, setStartAddress] = useState(DEFAULT_START)
+  const [stopAddress, setStopAddress] = useState(DEFAULT_STOP)
   const [guidanceOn, setGuidanceOn] = useState(true)
   const [busy, setBusy] = useState(false)
   const [route, setRoute] = useState<RouteResult>(() => getDemoRoute())
   const [routeVersion, setRouteVersion] = useState(0)
+  const booted = useRef(false)
 
   const onGo = useCallback(async () => {
     setBusy(true)
@@ -27,6 +31,12 @@ export default function App() {
       setBusy(false)
     }
   }, [startAddress, stopAddress])
+
+  useEffect(() => {
+    if (booted.current) return
+    booted.current = true
+    void onGo()
+  }, [onGo])
 
   return (
     <div className="app">

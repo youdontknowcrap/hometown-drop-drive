@@ -1,8 +1,20 @@
 # Hometown Drop & Drive
 
-Kid-friendly **browser driving toy**: type a start and stop address, get an OpenStreetMap route, toggle blue-line guidance, and drive with WASD / arrow keys.
+Kid-friendly **browser driving toy**: type a start and stop address, get an OpenStreetMap driving path, and drive with WASD.
 
-Web-first prototype (no Unity). Location-agnostic — works with any geocodable addresses, and always falls back to a Ridgecrest, CA demo loop if routing APIs fail (CORS / offline).
+The path is extruded into a **real-meter street** (two 12-ft lanes, world-locked asphalt UVs so speed is visible). The car is **not** locked to the road. Guidance is a soft hint plus an optional blue overlay.
+
+Web-first prototype (no Unity). Live routing needs `npm run dev` (Vite proxy). Offline / CORS failure falls back to a Ridgecrest demo loop.
+
+## Developer inbox
+
+Bugs, extra requirements, and “we discussed this” notes go in **GitHub Issues** on this repo — not a side README.
+
+https://github.com/youdontknowcrap/hometown-drop-drive/issues
+
+Commit messages close or reference those issues (`Fixes #1`). That is the paper trail.
+
+Buildings are parked on purpose (issue #5) until streets read as streets.
 
 ## Quick start
 
@@ -12,88 +24,50 @@ npm install
 npm run dev
 ```
 
-Open the URL Vite prints (usually `http://localhost:5173`).
-
-Production build:
-
-```bash
-npm install
-npm run build
-npm run preview
-```
-
-## Stack
-
-| Piece | Choice |
-|--------|--------|
-| Bundler | [Vite](https://vitejs.dev/) |
-| UI | React 19 + TypeScript |
-| 3D | [three.js](https://threejs.org/) via [react-three-fiber](https://docs.pmnd.rs/react-three-fiber) |
-| Helpers | [@react-three/drei](https://github.com/pmndrs/drei) (Sky, Line, camera) |
-| Physics | [@react-three/rapier](https://github.com/pmndrs/react-three-rapier) |
-| Geocode | [Nominatim](https://nominatim.org/) (OpenStreetMap) |
-| Routing | [OSRM](https://project-osrm.org/) public demo server |
-
-Dev-time CORS is handled by a small Vite proxy (`/api/nominatim`, `/api/osrm`) in `vite.config.ts`.
+Open the URL Vite prints (usually `http://localhost:5173`). First load tries Crossroads / China Lake Blvd → Eastern Sierra Railroad (real Ridgecrest streets).
 
 ## Controls
 
-- **W / ↑** — accelerate  
-- **S / ↓** — reverse / brake  
-- **A / ←** · **D / →** — steer  
-- **Guidance ON** — show blue path + soft steering hint toward the line  
-- **Guidance OFF** — free drive, hide the line  
-- **Go** — geocode addresses and load a new route (respawns the car)
+- **W / ↑** — accelerate
+- **S / ↓** — reverse / brake
+- **A / ←** · **D / →** — steer
+- **Guidance ON** — blue overlay + soft steering hint (not rails)
+- **Guidance OFF** — free drive, hide the overlay
+- **Go** — geocode + load a new street (respawns the car)
 
-Unlimited gas. No damage model yet (planned later).
+You can drive onto the desert. Ground and road textures repeat in **meters**.
 
-## What works vs stubbed (milestone 1)
+## Why streets were missing (and what changed)
+
+OSM/OSRM already returned a centerline in lat/lng. Milestone 1 only drew a `Line` on a tan box. The datum was there; the street was not.
+
+Now the centerline is a ribbon: 7.2 m wide, length = great-circle meters along the path, UV.v = distance / 6 m. Lane dashes are 3 m on / 9 m off.
+
+## Stack
+
+- Vite + React 19 + TypeScript
+- three.js / react-three-fiber / drei / rapier
+- Nominatim + OSRM public demo via `/api/nominatim` and `/api/osrm` (dev only)
+- CC0 textures: Poly Haven asphalt + aerial sand; Kenney road tilesheet vendored for later (see `ATTRIBUTION.md`)
+
+## What works vs later
 
 **Works**
 
-- Driveable 3D scene (sky, sun, desert ground, geometric car)
-- WASD / arrow arcade controls with chase camera
-- Address UI + Guidance toggle
-- Nominatim + OSRM via Vite proxy
-- Ridgecrest demo polyline fallback (always available)
-- Soft guidance hint (not hard rails)
+- Metric asphalt ribbon + lane paint
+- Textured desert you can drive on
+- Live OSM street when the proxy works
+- Demo fallback with length shown in the HUD
+- Soft guidance, not rails
 
-**Stubbed / next**
+**Later (issues)**
 
-- Real road mesh / terrain from map tiles
-- Physically richer vehicle (suspension, tire grip)
-- Light damage / bumps
-- Mobile touch controls
-- Multi-stop “drop & drive” errands
+- OSM buildings (#5) — parked
+- Production geocode proxy (#6)
+- Guidance nearest-segment (#7)
+- Drop / arrive / multi-stop (#8)
+- Streaming the whole map (#4 remainder)
 
-## Licenses & attribution
+## Licenses
 
-- This project code: use freely for the Hometown Drop & Drive experiment.
-- **OpenStreetMap** data © OpenStreetMap contributors ([ODbL](https://www.openstreetmap.org/copyright)).
-- **Nominatim** — please respect the [usage policy](https://operations.osmfoundation.org/policies/nominatim/) (identify your app; cache results; don’t hammer the service).
-- **OSRM** public demo — for light prototyping only; self-host or use a commercial provider for production traffic.
-- **three.js / R3F / drei / rapier** — see their respective MIT (or similar) licenses in `node_modules`.
-
-## Project layout
-
-```
-src/
-  App.tsx                 # UI state + routing trigger
-  components/
-    Scene.tsx             # Canvas, lights, physics world
-    Car.tsx               # Driveable geometric car
-    Ground.tsx            # Playfield
-    RouteLine.tsx         # Blue guidance line
-    FollowCam.tsx         # Chase camera
-    Hud.tsx               # Address overlay
-  hooks/useKeyboard.ts
-  lib/
-    geo.ts                # Lat/lng ↔ local meters
-    routing.ts            # Nominatim + OSRM + fallback
-    demoRoute.ts          # Ridgecrest CA demo polyline
-    guidance.ts           # Soft steering hint math
-```
-
-## Next recommended step
-
-Add **map-aligned scenery**: project a short OSM road centerline into a textured ribbon / simple buildings near the route so the blue line feels like a hometown street, still using free public map data only.
+See `ATTRIBUTION.md`. OSM data © OpenStreetMap contributors (ODbL). Public Nominatim/OSRM are for light prototyping only.

@@ -2,7 +2,7 @@
  * Geocode (Nominatim) + route (OSRM) with a hard fallback to the demo
  * Ridgecrest polyline so the toy always works offline / behind CORS.
  */
-import type { LatLng } from './geo'
+import { polylineLengthMeters, type LatLng } from './geo'
 import {
   DEMO_ORIGIN,
   DEMO_POLYLINE,
@@ -17,6 +17,7 @@ export type RouteResult = {
   message: string
   startLabel: string
   stopLabel: string
+  lengthMeters: number
 }
 
 type NominatimHit = {
@@ -67,48 +68,43 @@ export async function fetchRoute(
   const stopQ = stopAddress.trim()
 
   if (!startQ || !stopQ) {
-    return {
-      origin: DEMO_ORIGIN,
-      polyline: DEMO_POLYLINE,
-      source: 'demo',
-      message: 'Enter start & stop addresses, or enjoy the Ridgecrest demo loop.',
-      startLabel: DEMO_START_LABEL,
-      stopLabel: DEMO_STOP_LABEL,
-    }
+    return demoResult('Enter start & stop addresses, or enjoy the Ridgecrest demo loop.')
   }
 
   try {
     const [start, end] = await Promise.all([geocode(startQ), geocode(stopQ)])
     const polyline = await osrmRoute(start, end)
+    const lengthMeters = polylineLengthMeters(polyline)
+    const km = (lengthMeters / 1000).toFixed(2)
     return {
       origin: start,
       polyline,
       source: 'osrm',
-      message: `Route ready: ${polyline.length} points (OSRM).`,
+      message: `Live OSM street: ${km} km (${polyline.length} points).`,
       startLabel: start.label,
       stopLabel: end.label,
+      lengthMeters,
     }
   } catch (err) {
     const why = err instanceof Error ? err.message : 'unknown error'
-    return {
-      origin: DEMO_ORIGIN,
-      polyline: DEMO_POLYLINE,
-      source: 'demo',
-      message: `Using Ridgecrest demo route (${why}).`,
-      startLabel: DEMO_START_LABEL,
-      stopLabel: DEMO_STOP_LABEL,
-    }
+    return demoResult(`Using Ridgecrest demo route (${why}).`)
+  }
+}
+
+function demoResult(message: string): RouteResult {
+  const lengthMeters = polylineLengthMeters(DEMO_POLYLINE)
+  return {
+    origin: DEMO_ORIGIN,
+    polyline: DEMO_POLYLINE,
+    source: 'demo',
+    message: `${message} ${(lengthMeters / 1000).toFixed(2)} km demo path.`,
+    startLabel: DEMO_START_LABEL,
+    stopLabel: DEMO_STOP_LABEL,
+    lengthMeters,
   }
 }
 
 /** Instant demo route — used on first paint so the scene is never empty. */
 export function getDemoRoute(): RouteResult {
-  return {
-    origin: DEMO_ORIGIN,
-    polyline: DEMO_POLYLINE,
-    source: 'demo',
-    message: 'Demo loop around Ridgecrest, CA — press Go anytime.',
-    startLabel: DEMO_START_LABEL,
-    stopLabel: DEMO_STOP_LABEL,
-  }
+  return demoResult('Demo loop around Ridgecrest, CA — press Go for a live street.')
 }

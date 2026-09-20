@@ -35,6 +35,27 @@ export function polylineToLocal(
   })
 }
 
+/** Great-circle meters between two WGS84 points. */
+export function haversineMeters(a: LatLng, b: LatLng): number {
+  const R = 6_371_000
+  const toRad = (d: number) => (d * Math.PI) / 180
+  const dLat = toRad(b.lat - a.lat)
+  const dLng = toRad(b.lng - a.lng)
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)))
+}
+
+/** Path length in real meters (Earth), not screen units. */
+export function polylineLengthMeters(points: LatLng[]): number {
+  let d = 0
+  for (let i = 1; i < points.length; i++) {
+    d += haversineMeters(points[i - 1], points[i])
+  }
+  return d
+}
+
 /** Distance between two XZ points (ignore Y). */
 export function xzDistance(
   a: [number, number, number] | { x: number; z: number },
