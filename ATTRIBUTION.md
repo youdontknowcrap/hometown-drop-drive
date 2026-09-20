@@ -26,3 +26,14 @@ Files in `public/textures/` are 1K JPG (web toy size).
 ## Map data
 
 - OpenStreetMap contributors (ODbL) via Nominatim + OSRM public demo (dev proxy only).
+
+
+## Elevation (Terrarium / SRTM)
+
+Mapzen Terrarium PNG tiles hosted as AWS Open Data (`elevation-tiles-prod`).
+Built primarily from SRTM and related public DEMs. Used here as the browser-friendly
+stand-in for DTED-class height data.
+
+- Registry: https://registry.opendata.aws/terrain-tiles/
+- Format: https://github.com/tilezen/joerd/blob/master/docs/formats.md
+- Decode: `(R * 256 + G + B / 256) - 32768` → meters MSL

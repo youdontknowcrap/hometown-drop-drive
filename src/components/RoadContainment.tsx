@@ -13,6 +13,11 @@ type RoadContainmentProps = {
   version: number
   /** Invisible by default — set true only for debug. */
   debugVisible?: boolean
+  /**
+   * Terrain relief (maxRel − minRel). Walls grow so a hill can't let you
+   * hop the ~200 ft corridor fence.
+   */
+  reliefM?: number
 }
 
 function WallColliders({ walls }: { walls: ContainmentWall[] }) {
@@ -40,8 +45,14 @@ export function RoadContainment({
   ways,
   version,
   debugVisible = false,
+  reliefM = 0,
 }: RoadContainmentProps) {
-  const walls = useMemo(() => buildContainmentWalls(ways, CONTAINMENT_M), [ways])
+  const walls = useMemo(() => {
+    const base = buildContainmentWalls(ways, CONTAINMENT_M)
+    // Default wall is 5 m; grow with terrain relief so hills don't clear it.
+    const h = Math.max(5, 5 + reliefM + 4)
+    return base.map((w) => ({ ...w, height: h }))
+  }, [ways, reliefM])
 
   if (!walls.length) return null
 

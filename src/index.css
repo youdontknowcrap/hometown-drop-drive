@@ -337,3 +337,11 @@ kbd {
   color: #90a4ae;
   font-weight: 600;
 }
+
+.speedo-sanity {
+  margin: 0.15rem 0 0;
+  font-size: 0.6rem;
+  color: #78909c;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}

@@ -19,6 +19,8 @@ type HudProps = {
   gpsMessage: string
   hasDestination: boolean
   world: StreetWorld
+  /** Terrarium vs flat status from Scene. */
+  terrainMessage?: string
   camDistance: number
   camHeight: number
   onDropChange: (v: string) => void
@@ -65,6 +67,7 @@ export function Hud({
   gpsMessage,
   hasDestination,
   world,
+  terrainMessage,
   camDistance,
   camHeight,
   onDropChange,
@@ -117,7 +120,7 @@ export function Hud({
             <input
               type="range"
               min={8}
-              max={40}
+              max={48}
               step={1}
               value={camDistance}
               onChange={(e) => onCamDistance(Number(e.target.value))}
@@ -150,6 +153,11 @@ export function Hud({
                 ? ` · live OSM (${world.wayCount} ways)`
                 : ' · OSM returned zero ways'}
           </p>
+          {terrainMessage ? (
+            <p className="hud-status" role="status">
+              {terrainMessage}
+            </p>
+          ) : null}
         </form>
 
         <form className="hud-panel hud-gps" onSubmit={submitDest}>
@@ -205,9 +213,10 @@ export function Hud({
             <kbd>W</kbd>
             <kbd>A</kbd>
             <kbd>S</kbd>
-            <kbd>D</kbd> drive (click the world or press{' '}
-            <kbd>Esc</kbd> after typing). Set a destination anytime. Drive off
-            the blue line and GPS will reroute. Clear = free drive.
+            <kbd>D</kbd> drive · pad: LT gas, RT brake, LB reverse (click the
+            world or press <kbd>Esc</kbd> after typing). Set a destination
+            anytime. Drive off the blue line and GPS will reroute. Clear = free
+            drive.
           </p>
         </form>
       </div>

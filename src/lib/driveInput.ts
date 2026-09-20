@@ -1,15 +1,25 @@
 /**
  * Merge keyboard + USB gamepad into one drive sample each frame.
  *
- * Gamepad (standard mapping, Browser Gamepad API):
- *   Left stick X / D-pad  → steer (−1 right … +1 left, matches WASD)
- *   RT / A                → accelerate
- *   LT / B                → brake / reverse
+ * --- Gamepad standard mapping (W3C Gamepad API button indices) ---
+ *   buttons[6]  LT  Left trigger   → GAS (throttle)
+ *   buttons[7]  RT  Right trigger  → BRAKE (toward 0, no reverse)
+ *   buttons[4]  LB  Left bumper    → REVERSE
+ *   axes[0]     Left stick X       → steer (−1 left … +1 right on hardware)
+ *   buttons[14]/[15] D-pad L/R     → steer
  *
- * Stick deadzone ~0.22 (slop around center → treat as zero, spring to straight).
+ * WHY LT=gas / RT=brake? Joey's muscle memory from other driving games, and
+ * it frees LB for an explicit reverse so brake no longer "tips into reverse"
+ * the way the old combined LT mapping did.
+ *
+ * Keyboard WASD still works in parallel (inputs OR together each frame):
+ *   W / ↑  throttle
+ *   S / ↓  brake-or-reverse (Car picks from current signed speed)
+ *   A/D    steer
+ *
+ * Stick deadzone → δ=0 → bicycle yaw rate 0 → goes straight.
  * Holding mid-stick holds a mid turn: steer target tracks stick proportionally
  * and the angle lerps toward that target (not binary snap / overshoot).
- * Keyboard A/D uses the same spring-return on release.
  */
 
 import type { DriveKeys } from '../hooks/useKeyboard'
@@ -27,9 +37,21 @@ export const STEER_RELEASE = 26
 const TARGET_ZERO_EPS = 0.03
 
 export type DriveSample = {
-  forward: boolean
-  back: boolean
-  /** −1 = right, +1 = left (same sign as legacy A/D → yaw). */
+  /** LT / W — accelerate forward. */
+  throttle: boolean
+  /** RT — decelerate toward 0 (never crosses into reverse by itself). */
+  brake: boolean
+  /** LB — accelerate reverse. */
+  reverse: boolean
+  /**
+   * Keyboard S/↓. Car maps this to brake while moving forward, reverse from
+   * rest — keeps WASD familiar without a separate reverse key.
+   */
+  keyboardBack: boolean
+  /**
+   * −1 = right, +1 = left. This is the *normalized wheel angle demand* δ̂
+   * (not a yaw-rate joystick). Car turns it into δ rad via wheelAngleRad().
+   */
   steer: number
   /** True when a connected pad contributed this frame. */
   usingGamepad: boolean
@@ -50,7 +72,6 @@ function deadzone(v: number, dz = GAMEPAD_DEADZONE): number {
 function easeSteer(v: number): number {
   const a = Math.abs(v)
   if (a < 1e-8) return 0
-  // Mix linear with smoothstep — mid stays ~proportional, edges soften a bit
   const smooth = a * a * (3 - 2 * a)
   return Math.sign(v) * (a * 0.75 + smooth * 0.25)
 }
@@ -69,8 +90,10 @@ export function sampleDriveInput(keys: DriveKeys): DriveSample {
   if (keys.left) steer += 1
   if (keys.right) steer -= 1
 
-  let forward = keys.forward
-  let back = keys.back
+  let throttle = keys.forward
+  let brake = false
+  let reverse = false
+  const keyboardBack = keys.back
   let usingGamepad = false
 
   const pads =
@@ -83,7 +106,8 @@ export function sampleDriveInput(keys: DriveKeys): DriveSample {
     if (!p || !p.connected) continue
     usingGamepad = true
 
-    // Left stick X: −1 left … +1 right → our steer is opposite sign.
+    // Left stick X: −1 left … +1 right on hardware → our steer is opposite sign
+    // (positive steer = turn left = positive yaw in our Y-up frame).
     // Deadzone + ease → proportional mid-hold; center slop → 0 (spring home).
     const stickX = easeSteer(deadzone(p.axes[0] ?? 0))
     steer += -stickX
@@ -94,18 +118,22 @@ export function sampleDriveInput(keys: DriveKeys): DriveSample {
     if ((p.axes.length > 6 ? deadzone(p.axes[6] ?? 0, 0.5) : 0) < 0) steer += 1
     if ((p.axes.length > 6 ? deadzone(p.axes[6] ?? 0, 0.5) : 0) > 0) steer -= 1
 
-    const rt = p.buttons[7]?.value ?? (p.buttons[7]?.pressed ? 1 : 0)
+    // --- Trigger / bumper map (Joey feel-pack) ---
+    // buttons[6] LT = gas, buttons[7] RT = brake, buttons[4] LB = reverse.
     const lt = p.buttons[6]?.value ?? (p.buttons[6]?.pressed ? 1 : 0)
-    const aBtn = p.buttons[0]?.pressed ?? false
-    const bBtn = p.buttons[1]?.pressed ?? false
+    const rt = p.buttons[7]?.value ?? (p.buttons[7]?.pressed ? 1 : 0)
+    const lb = p.buttons[4]?.pressed ?? false
 
-    if (rt > 0.15 || aBtn) forward = true
-    if (lt > 0.15 || bBtn) back = true
+    if (lt > 0.15) throttle = true
+    if (rt > 0.15) brake = true
+    if (lb) reverse = true
   }
 
   return {
-    forward,
-    back,
+    throttle,
+    brake,
+    reverse,
+    keyboardBack,
     steer: clampSteer(steer),
     usingGamepad,
   }

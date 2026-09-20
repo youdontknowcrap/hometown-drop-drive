@@ -30,13 +30,15 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [world, setWorld] = useState<StreetWorld>(() => getDemoWorld())
   const [worldVersion, setWorldVersion] = useState(0)
-  const [camDistance, setCamDistance] = useState(14)
-  const [camHeight, setCamHeight] = useState(7)
+  // Slightly longer chase default — more ground rush without faking mph.
+  const [camDistance, setCamDistance] = useState(20)
+  const [camHeight, setCamHeight] = useState(8)
 
   const [nav, setNav] = useState<NavRoute | null>(null)
   const [gpsStatus, setGpsStatus] = useState<GpsStatus>('idle')
   const [gpsMessage, setGpsMessage] = useState('')
   const [gpsBusy, setGpsBusy] = useState(false)
+  const [terrainMessage, setTerrainMessage] = useState('Elevation: …')
 
   const booted = useRef(false)
   /** Destination lat/lng kept for reroutes even while polyline updates. */
@@ -211,6 +213,7 @@ export default function App() {
           routeVersion={worldVersion}
           camDistance={camDistance}
           camHeight={camHeight}
+          onTerrainMessage={setTerrainMessage}
         />
       </div>
       <Hud
@@ -223,6 +226,7 @@ export default function App() {
         gpsMessage={gpsMessage}
         hasDestination={hasDestination}
         world={world}
+        terrainMessage={terrainMessage}
         camDistance={camDistance}
         camHeight={camHeight}
         onDropChange={setDropAddress}

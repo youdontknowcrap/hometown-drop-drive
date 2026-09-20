@@ -1,14 +1,19 @@
 import { useEffect, useRef } from 'react'
 import { carPose } from '../lib/carPose'
-import { MAX_SPEED_MPH } from '../lib/longitudinal'
+import { MAX_SPEED_MPH, MPH_TO_MS } from '../lib/longitudinal'
 
 /**
  * Live mph readout so Joey can verify the car actually hits ~110.
- * Reads carPose from the physics loop — no React state thrash.
+ *
+ * Optional "m/s last sec" line is a SCALE SANITY CHECK, not a second speedo:
+ *   expected ≈ |mph| * 0.44704
+ * If mph says 110 and meters/sec says ~49, units are honest. If it still
+ * "feels slow," tweak the chase cam — do not multiply mph by a fudge factor.
  */
 export function Speedo() {
   const valueRef = useRef<HTMLSpanElement>(null)
   const barRef = useRef<HTMLDivElement>(null)
+  const sanityRef = useRef<HTMLParagraphElement>(null)
 
   useEffect(() => {
     let raf = 0
@@ -23,6 +28,14 @@ export function Speedo() {
         barRef.current.style.width = `${pct}%`
         barRef.current.dataset.dir = signed < -0.5 ? 'rev' : 'fwd'
       }
+      if (sanityRef.current) {
+        const mps = carPose.ready ? carPose.metersLastSecond : 0
+        const expect = mph * MPH_TO_MS
+        sanityRef.current.textContent =
+          mps > 0.5
+            ? `${mps.toFixed(0)} m/s last sec · expect ~${expect.toFixed(0)}`
+            : `expect ~${expect.toFixed(0)} m/s at this mph`
+      }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
@@ -30,7 +43,7 @@ export function Speedo() {
   }, [])
 
   return (
-    <div className="speedo" aria-live="polite" title="Speed (mph)">
+    <div className="speedo" aria-live="polite" title="Speed (mph) — true scale">
       <div className="speedo-readout">
         <span ref={valueRef} className="speedo-value">
           0
@@ -41,6 +54,9 @@ export function Speedo() {
         <div ref={barRef} className="speedo-bar" style={{ width: '0%' }} />
       </div>
       <p className="speedo-cap">cap {MAX_SPEED_MPH}</p>
+      <p className="speedo-sanity" ref={sanityRef}>
+        —
+      </p>
     </div>
   )
 }

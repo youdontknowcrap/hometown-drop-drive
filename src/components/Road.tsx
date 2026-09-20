@@ -11,6 +11,7 @@ import {
   type XzPoint,
 } from '../lib/roadMesh'
 import { widthForHighway, type StreetKind } from '../lib/osmStreets'
+import { sampleHeight, type HeightGrid } from '../lib/terrarium'
 
 export type LocalStreet = {
   points: XzPoint[]
@@ -20,6 +21,8 @@ export type LocalStreet = {
 
 type RoadProps = {
   streets: LocalStreet[]
+  /** Terrarium (or flat) — ribbons are draped so asphalt follows hills. */
+  heightGrid: HeightGrid
 }
 
 function arraysToGeometry(built: MeshArrays | null): THREE.BufferGeometry | null {
@@ -54,16 +57,36 @@ function emptyBucket(): Bucket {
   return { ribbon: [], paint: [], curb: [] }
 }
 
+/** Lift every vertex by terrain height so roads follow hills (not float at y=0). */
+function drapeGeometry(
+  geo: THREE.BufferGeometry | null,
+  grid: HeightGrid,
+): THREE.BufferGeometry | null {
+  if (!geo) return null
+  const pos = geo.attributes.position
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i)
+    const z = pos.getZ(i)
+    // Keep the small ribbon bias (0.12–0.14) already baked into Y, add terrain.
+    pos.setY(i, pos.getY(i) + sampleHeight(grid, x, z))
+  }
+  pos.needsUpdate = true
+  geo.computeVertexNormals()
+  return geo
+}
+
+
 /**
  * OSM streets as asphalt / service / dirt ribbons.
  * Paved = dark asphalt band + lane paint + edge curbs (must read vs desert).
  * Dirt tracks = narrow brown, no paint.
+ * Ribbons are draped onto the Terrarium height grid so hills lift the asphalt.
  *
  * Playtest: only black curb lines showed — fill was camouflaged / hard to
  * read. Ribbons are raised, DoubleSide, and multiply a near-black tint so the
  * paved band is obvious even when the albedo map is mid-gray.
  */
-export function Road({ streets }: RoadProps) {
+export function Road({ streets, heightGrid }: RoadProps) {
   const [diff, nor] = useTexture(
     ['/textures/asphalt_01_diff_1k.jpg', '/textures/asphalt_01_nor_gl_1k.jpg'],
     prepMaps,
@@ -104,15 +127,16 @@ export function Road({ streets }: RoadProps) {
       }
     }
 
+    // Drape after merge — asphalt follows Terrarium hills (flat grid → no-op).
     return {
-      pavedRibbon: arraysToGeometry(mergeMeshArrays(paved.ribbon)),
-      pavedPaint: arraysToGeometry(mergeMeshArrays(paved.paint)),
-      pavedCurb: arraysToGeometry(mergeMeshArrays(paved.curb)),
-      serviceRibbon: arraysToGeometry(mergeMeshArrays(service.ribbon)),
-      serviceCurb: arraysToGeometry(mergeMeshArrays(service.curb)),
-      dirtRibbon: arraysToGeometry(mergeMeshArrays(dirt)),
+      pavedRibbon: drapeGeometry(arraysToGeometry(mergeMeshArrays(paved.ribbon)), heightGrid),
+      pavedPaint: drapeGeometry(arraysToGeometry(mergeMeshArrays(paved.paint)), heightGrid),
+      pavedCurb: drapeGeometry(arraysToGeometry(mergeMeshArrays(paved.curb)), heightGrid),
+      serviceRibbon: drapeGeometry(arraysToGeometry(mergeMeshArrays(service.ribbon)), heightGrid),
+      serviceCurb: drapeGeometry(arraysToGeometry(mergeMeshArrays(service.curb)), heightGrid),
+      dirtRibbon: drapeGeometry(arraysToGeometry(mergeMeshArrays(dirt)), heightGrid),
     }
-  }, [streets])
+  }, [streets, heightGrid])
 
   useEffect(
     () => () => {
