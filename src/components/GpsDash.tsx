@@ -5,6 +5,7 @@ import type { XzPoint } from '../lib/roadMesh'
 import {
   fetchGpsOverlay,
   keepLiveWayAtZoom,
+  preferOverlayCartography,
   wantsRegionalOverlay,
   type GpsOverlayData,
   type OverlayWay,
@@ -176,6 +177,8 @@ export function GpsDash({
   mapModeRef.current = mapMode
   const liveStreetsRef = useRef(liveStreetsOn)
   liveStreetsRef.current = liveStreetsOn
+  const expandedRef = useRef(expanded)
+  expandedRef.current = expanded
   const sizeRef = useRef(size)
   sizeRef.current = size
   const waysRef = useRef(ways)
@@ -366,8 +369,8 @@ export function GpsDash({
       const ov = overlayRef.current
       const originNow = originRef.current
 
-      // --- Water (far / mid): soft fills under roads ---
-      if (ov && (regional || viewM > 1_400)) {
+      // --- Water: soft fills under roads (mid+ / any expanded overlay) ---
+      if (ov && (regional || expandedRef.current || viewM > 1_400)) {
         ctx.fillStyle = 'rgba(66, 165, 245, 0.28)'
         for (const poly of overlayToLocal(ov.water, originNow)) {
           fillPoly(poly, cx, cz, yaw, trackUp, mPerPx, half)
@@ -385,8 +388,8 @@ export function GpsDash({
         ctx.setLineDash([])
       }
 
-      // --- Overlay majors (regional backbone) ---
-      if (ov && (regional || viewM > 1_200)) {
+      // --- Overlay majors (regional backbone / expanded cartography) ---
+      if (ov && (regional || expandedRef.current || viewM > 1_200)) {
         ctx.strokeStyle = '#8fa8b8'
         ctx.lineWidth = regional ? 1.8 : 1.4
         for (const poly of overlayToLocal(ov.majors, originNow)) {
@@ -394,18 +397,28 @@ export function GpsDash({
         }
       }
 
-      // --- Live loaded streets (load indicator) — toggleable ---
-      if (liveOn) {
+      // --- Live loaded streets (load heartbeat) — toggleable ---
+      // Dual-duty: close zoom paints the stream cue; far/expanded prefers
+      // overlay majors + route + markers. If overlay majors are ready, skip
+      // live paint entirely so residential spaghetti cannot fight cartography.
+      const overlayCartography = preferOverlayCartography(
+        viewM,
+        expandedRef.current,
+      )
+      const overlayHasMajors = (ov?.majors.length ?? 0) > 0
+      const paintLive =
+        liveOn && !(overlayCartography && overlayHasMajors)
+      if (paintLive) {
         const liveWays = waysRef.current
         for (const w of liveWays) {
           if (!keepLiveWayAtZoom(w.highway, viewM)) continue
-          // At far zoom live majors are a light accent; close = denser.
           const major =
             w.highway === 'motorway' ||
             w.highway === 'trunk' ||
             w.highway === 'primary' ||
             w.highway === 'secondary'
-          ctx.strokeStyle = regional
+          // Far without overlay yet: majors-only accent (keepLiveWayAtZoom).
+          ctx.strokeStyle = overlayCartography
             ? major
               ? '#a8c0ce'
               : '#5c7a8a'

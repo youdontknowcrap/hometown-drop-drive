@@ -13,8 +13,9 @@
  *   and still drifts off the blue line. Snap/slide keeps the car *on* the
  *   guidance path; throttle/brake only modulate commanded speed (0–200).
  *
- * Path source: the same blue GPS polyline Scene already drapes (OSRM when
- * live, straight fallback offline). GPS dial still paints only loaded ways.
+ * Path source: the **driven** route from App — OSRM (or straight fallback)
+ * snapped onto loaded active-way centerlines (see lib/streetGraph.ts). GPS
+ * blue line, turn guidance, and AP all share that same polyline.
  *
  * Cruise (A/✕/C) stays independent — engaging AP cancels cruise; reverse /
  * toggle / arrive near destination cancel AP.

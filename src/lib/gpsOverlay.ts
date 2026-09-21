@@ -10,6 +10,9 @@
  *
  * Prefer playable ship over perfect cartography: cache coarse cells, skip
  * on failure, let the blue route + majors carry the regional overview.
+ *
+ * Dual-duty: close zoom = live load cue; far/expanded = overlay cartography
+ * (see keepLiveWayAtZoom / preferOverlayCartography). Jobs must not fight.
  */
 import { metersPerDegree, type LatLng } from './geo'
 import { overpassInterpreter, nominatimSearch } from './osmApi'
@@ -222,9 +225,24 @@ out geom;`
   return job
 }
 
-/** True when the dial’s view span warrants simplified regional layers. */
+/**
+ * Dual-duty GPS dial (Forge / Joey):
+ *   CLOSE zoom  — live loaded streets = stream **load heartbeat**
+ *   FAR / expanded — cartography overlays (majors, lakes, state); do NOT
+ *                    paint local residential spaghetti that fights the overview.
+ *
+ * Thresholds are view-meters across the dial (compact or expanded).
+ */
+/** Below this: paint all live ways (toggle permitting) as the load cue. */
+export const GPS_CLOSE_ZOOM_M = 1_000
+/** Mid band: drop alleys/service; keep residential as a softer load cue. */
+export const GPS_MID_ZOOM_M = 1_800
+/** At/above: regional overlay mode — majors+route+markers, not local mesh. */
+export const GPS_FAR_ZOOM_M = 2_200
+
+/** True when the dial's view span warrants simplified regional layers. */
 export function wantsRegionalOverlay(viewMeters: number): boolean {
-  return viewMeters >= 2_200
+  return viewMeters >= GPS_FAR_ZOOM_M
 }
 
 /** Major-class highway tag? (live ways filter at mid/far zoom). */
@@ -243,21 +261,36 @@ export function isMajorHighway(highway: string): boolean {
   )
 }
 
-/** Keep tertiary+ for mid zoom; drop service/dirt/residential at wide. */
+/**
+ * Which live (streamed) ways to stroke at this zoom.
+ *
+ * CLOSE (< GPS_CLOSE_ZOOM_M): all — load heartbeat.
+ * MID: drop service/dirt/foot — keep residential so tiles still "breathe."
+ * FAR (>= GPS_FAR_ZOOM_M): majors only as a thin accent while overlay loads;
+ *   GpsDash may skip live paint entirely once overlay majors are present.
+ */
 export function keepLiveWayAtZoom(highway: string, viewMeters: number): boolean {
   const h = highway.toLowerCase()
-  if (viewMeters < 900) return true
-  if (viewMeters < 2_200) {
-    // Mid: drop service / dirt / footways — keep residential as load cue.
+  if (viewMeters < GPS_CLOSE_ZOOM_M) return true
+  if (viewMeters < GPS_FAR_ZOOM_M) {
     return !(
       h === 'service' ||
       h === 'track' ||
       h === 'path' ||
       h === 'footway' ||
       h === 'pedestrian' ||
-      h === 'bridleway'
+      h === 'bridleway' ||
+      h === 'steps'
     )
   }
-  // Far: live tiles only as major accents if overlay is late — else spaghetti.
+  // Far: never paint residential / tertiary spaghetti on the overview.
   return isMajorHighway(h)
+}
+
+/** Prefer overlay cartography over live mesh at this zoom (or expanded). */
+export function preferOverlayCartography(
+  viewMeters: number,
+  expanded: boolean,
+): boolean {
+  return expanded || viewMeters >= GPS_FAR_ZOOM_M
 }

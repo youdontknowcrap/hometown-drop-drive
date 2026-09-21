@@ -20,6 +20,10 @@ import {
 } from './lib/weather'
 import { DEFAULT_PAINT } from './components/Car'
 import { autopilotControl } from './lib/autopilot'
+import {
+  alignRouteToLoadedWays,
+  loadedWaysFingerprint,
+} from './lib/streetGraph'
 
 const DEFAULT_DROP = '235 N China Lake Blvd, Ridgecrest, CA'
 const DEFAULT_DEST = 'Eastern Sierra Blvd, Ridgecrest, CA'
@@ -243,10 +247,28 @@ export default function App() {
     [stream.activeWays, world.origin],
   )
 
-  const routeLocal = useMemo(() => {
+  /** Raw OSRM / straight polyline in world XZ (before loaded-street snap). */
+  const routeLocalRaw = useMemo(() => {
     if (!nav) return [] as Array<[number, number, number]>
     return polylineToLocal(nav.polyline, world.origin)
   }, [nav, world.origin])
+
+  /**
+   * ONE PATH TRUTH (Forge): driven route = OSRM snapped onto loaded active
+   * way centerlines. AP, GPS blue line, turn guidance, and off-course all
+   * share this polyline. Replans when tiles stream (fingerprint changes).
+   */
+  const waysFingerprint = useMemo(
+    () => loadedWaysFingerprint(localWays),
+    [localWays],
+  )
+
+  const routeLocal = useMemo(() => {
+    if (routeLocalRaw.length < 2) return [] as Array<[number, number, number]>
+    return alignRouteToLoadedWays(routeLocalRaw, localWays)
+    // waysFingerprint stands in for localWays geometry identity
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeLocalRaw, waysFingerprint])
 
   useEffect(() => {
     navLocalRef.current = routeLocal

@@ -42,7 +42,7 @@ export const carPose = {
   cruiseMph: 0,
   /**
    * Street autopilot active (KeyP / Y/△ / HUD). Speedo shows AUTOPILOT +
-   * commanded target mph. Follows the blue GPS polyline (snap/slide).
+   * commanded target mph. Follows the driven (loaded-street) path (snap/slide).
    */
   autopilotOn: false,
   /** Commanded AP speed target (mph, 0..200). */
