@@ -32,6 +32,12 @@
  *
  * Buildings stream on the same tiles (worker Overpass) but never paint GPS.
  * Elev sliding window is Scene-side (worker elev decode) keyed off loadedAabb.
+ *
+ * SMOOTH APPLY (hitch fix):
+ *   Worker finishes ways then buildings for a tile → ONE emit (not two).
+ *   React hooks coalesce emits via applyCoordinator (≤1 setState / frame).
+ *   Scene mounts Road per tile so one arrival remeshes that tile only —
+ *   never the whole world asphalt in one frame.
  */
 
 import {
@@ -106,10 +112,23 @@ export type LoadedAabb = {
  * Snapshot React reads. `activeWays` is the ONLY list allowed into Scene
  * and GpsDash (hard GPS rule).
  */
+/** One active tile’s ways — Scene mounts a Road group per key (incremental). */
+export type ActiveTileWays = {
+  key: TileKey
+  tx: number
+  tz: number
+  ways: StreetWay[]
+}
+
 export type StreamSnapshot = {
   origin: LatLng
   dropLabel: string
   activeWays: StreetWay[]
+  /**
+   * Per-tile ways for incremental Road meshes. Same ways as activeWays
+   * (pre-dedupe within each tile); GPS still uses flattened activeWays.
+   */
+  activeTiles: ActiveTileWays[]
   /** HARD GPS RULE still streets-only — buildings are scenery, not dial ink. */
   activeBuildings: BuildingBox[]
   buildingsMessage: string
@@ -314,6 +333,10 @@ export class StreetTileStreamer {
     const cachedCount = all.filter((t) => t.status === 'cached').length
     // Stable reference when active content unchanged — Road meshes stay put.
     const activeWays = this.refreshActiveWaysCache()
+    // Per-tile list for incremental Road groups (sorted for stable React keys).
+    const activeTileWays: ActiveTileWays[] = activeTiles
+      .map((t) => ({ key: t.key, tx: t.tx, tz: t.tz, ways: t.ways }))
+      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
     // Buildings follow the same active set (unload when tile demotes/drops).
     const activeBuildings = mergeActiveBuildingBoxes(
       activeTiles.map((t) => t.buildings),
@@ -330,6 +353,7 @@ export class StreetTileStreamer {
       origin: this.origin,
       dropLabel: this.dropLabel,
       activeWays,
+      activeTiles: activeTileWays,
       activeBuildings,
       buildingsMessage,
       activeTileCount: activeTiles.length,
@@ -534,6 +558,8 @@ export class StreetTileStreamer {
     const bbox = tileToBbox(tile.tx, tile.tz, this.origin)
 
     // Worker: Overpass + JSON parse off the render thread. Main only merges.
+    // LEARNING — ONE emit after ways + buildings (not two hitches per tile).
+    // React still coalesces further via applyCoordinator (≤1 commit / frame).
     void workerFetchWays(bbox.south, bbox.west, bbox.north, bbox.east)
       .then(async (ways) => {
         if (this.disposed || gen !== this.gen) return
@@ -545,9 +571,8 @@ export class StreetTileStreamer {
         // Active if near the car OR the look-ahead point (velocity runway).
         live.status =
           dCar <= ACTIVE_RING || dLook <= ACTIVE_RING ? 'active' : 'cached'
-        this.emit()
 
-        // Same tile stream: buildings after ways (sequential = polite to Overpass).
+        // Buildings after ways (sequential = polite to Overpass). Fail soft.
         // Cached tiles keep buildings in RAM; only *active* union reaches Scene.
         try {
           const bw = await workerFetchBuildings(
@@ -562,10 +587,14 @@ export class StreetTileStreamer {
           const again = this.tiles.get(tile.key)
           if (!again) return
           again.buildings = bw.boxes
-          this.emit()
         } catch (err) {
           console.warn('[streetTiles] tile buildings failed', tile.key, err)
         }
+
+        // Single apply package: ways (+ buildings if any) → one React hitch budget.
+        if (this.disposed || gen !== this.gen) return
+        if (!this.tiles.has(tile.key)) return
+        this.emit()
       })
       .catch((err: unknown) => {
         if (this.disposed || gen !== this.gen) return
@@ -688,7 +717,10 @@ export async function startStreetStream(dropAddress: string): Promise<{
     const drop = await geocodeDrop(q)
     const streamer = new StreetTileStreamer(drop, drop.label)
     streamer.bootstrapAroundDrop()
-    await waitForMinActive(streamer, 1, 12_000)
+    // Prefer a few neighbors before clearing busy so Drop’s first applies
+    // coalesce under the loading flag (fewer mid-drive mesh bumps). Timeout
+    // still lets a slow Overpass hand back after the center tile.
+    await waitForMinActive(streamer, 5, 14_000)
     const snap = streamer.snapshot()
     const world: StreetWorld = {
       origin: snap.origin,

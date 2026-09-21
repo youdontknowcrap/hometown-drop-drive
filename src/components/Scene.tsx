@@ -5,7 +5,7 @@ import { Physics } from '@react-three/rapier'
 import { Ground } from './Ground'
 import { FarGround } from './FarGround'
 import { Car } from './Car'
-import { Road } from './Road'
+import { RoadTiles } from './RoadTiles'
 import { StreetLabels } from './StreetLabels'
 import { RoadContainment } from './RoadContainment'
 import { RouteLine } from './RouteLine'
@@ -33,7 +33,12 @@ import {
 } from '../lib/terrarium'
 import { sunAt, sunLightPosition } from '../lib/sun'
 import type { WeatherLook } from '../lib/weather'
-import { PREFETCH_RING, TILE_M, type LoadedAabb } from '../lib/streetTiles'
+import {
+  PREFETCH_RING,
+  TILE_M,
+  type ActiveTileWays,
+  type LoadedAabb,
+} from '../lib/streetTiles'
 import {
   tileLoaderUsesWorker,
   workerFetchElevFar,
@@ -45,6 +50,12 @@ type SceneProps = {
   keys: MutableRefObject<DriveKeys>
   origin: LatLng
   ways: StreetWay[]
+  /**
+   * Per-tile ways for incremental Road meshes. When omitted, Scene falls
+   * back to a single Road from `ways` (tests / demo). Prefer activeTiles
+   * from the streamer so one tile arrival remeshes that tile only.
+   */
+  activeTiles?: ActiveTileWays[]
   /** Local XZ guidance polyline (empty = no destination). */
   routePath: Array<[number, number, number]>
   /** Soft follow — only when guidance ON and a destination exists. */
@@ -89,6 +100,7 @@ export function Scene({
   keys,
   origin,
   ways,
+  activeTiles,
   routePath,
   guidanceOn,
   showRoute,
@@ -206,17 +218,23 @@ export function Scene({
    *   Car / FollowCam keep spawnKey=routeVersion (Drop only) — elev swaps must
    *   NOT remount the RigidBody or camera (Joey lock).
    *
-   * Sliding window: refresh when active-tile AABB union changes so hills follow
-   * the drive. lockedSpawnElevMsl keeps relative heights stable across refreshes.
+   * LEARNING — hitch fix (elev):
+   *   Do NOT rebuild Ground on every tiny AABB edge twitch as Drop’s 3×3
+   *   activates. Debounce + only refresh when the soft-edge AABB grows by
+   *   ≥ ~½ tile vs the last fetched box (or first load). lockedSpawnElevMsl
+   *   keeps relative heights stable so the car Y pin does not “pop”.
    */
   const spawnElevLockRef = useRef<number | null>(null)
   const elevGenRef = useRef(0)
   const lastFarAtRef = useRef<{ x: number; z: number } | null>(null)
+  /** Last AABB we actually fetched elev for — significance gate. */
+  const lastElevAabbRef = useRef<LoadedAabb | null>(null)
 
   // Drop reset — clear elev lock so the new origin re-zeros honestly.
   useEffect(() => {
     spawnElevLockRef.current = null
     lastFarAtRef.current = null
+    lastElevAabbRef.current = null
     elevGenRef.current += 1
     const span = TILE_M * (PREFETCH_RING + 1)
     setHeightGrid(flatHeightGrid(0, 0, span * 2, 'Loading elevation…'))
@@ -226,10 +244,10 @@ export function Scene({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Drop-only reset
   }, [routeVersion, origin.lat, origin.lng])
 
-  // Near elev: debounce on loadedAabb so soft-edge growth streams hills in.
+  // Near elev: debounce + significance gate so Drop’s 3×3 doesn’t swap Ground
+  // nine times. Car Y pin + spawnElevLock keep drive feel continuous.
   useEffect(() => {
     let cancelled = false
-    const gen = ++elevGenRef.current
     const span = TILE_M * (PREFETCH_RING + 1)
     const aabb: LoadedAabb = loadedAabb ?? {
       minX: -span,
@@ -238,16 +256,43 @@ export function Scene({
       maxZ: span,
     }
 
+    const significant = (next: LoadedAabb, prev: LoadedAabb | null): boolean => {
+      if (!prev) return true
+      // Refresh when soft edge grows by ≥ half a tile on any side.
+      const grow = TILE_M * 0.5
+      return (
+        next.minX <= prev.minX - grow ||
+        next.maxX >= prev.maxX + grow ||
+        next.minZ <= prev.minZ - grow ||
+        next.maxZ >= prev.maxZ + grow
+      )
+    }
+
+    if (!significant(aabb, lastElevAabbRef.current)) {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    const gen = ++elevGenRef.current
+    // Longer quiet window — let several tile activates coalesce into one fetch.
     const timer = window.setTimeout(() => {
+      if (cancelled) return
+      // Re-check after debounce: another expand may have landed.
+      const latest: LoadedAabb = loadedAabb ?? aabb
+      if (!significant(latest, lastElevAabbRef.current) && lastElevAabbRef.current) {
+        return
+      }
+      lastElevAabbRef.current = { ...latest }
       onTerrainMessage?.(
         `Loading elevation (sliding · relief ${VERTICAL_EXAGGERATION}×)…`,
       )
       void workerFetchElevNear({
         origin,
-        minX: aabb.minX,
-        maxX: aabb.maxX,
-        minZ: aabb.minZ,
-        maxZ: aabb.maxZ,
+        minX: latest.minX,
+        maxX: latest.maxX,
+        minZ: latest.minZ,
+        maxZ: latest.maxZ,
         spawnX: spawn[0],
         spawnZ: spawn[2],
         lockedSpawnElevMsl: spawnElevLockRef.current ?? undefined,
@@ -285,7 +330,7 @@ export function Scene({
           onFarTerrainMessage?.('Far terrain: unavailable')
         }
       })
-    }, 400)
+    }, 700)
 
     return () => {
       cancelled = true
@@ -438,7 +483,16 @@ export function Scene({
         {farHeightGrid ? (
           <FarGround nearGrid={heightGrid} farGrid={farHeightGrid} roadTrenchWays={roadTrenchWays} />
         ) : null}
-        <Road streets={localStreets} heightGrid={heightGrid} />
+        {/* Per-tile asphalt — one new tile remeshes that group only (hitch fix). */}
+        <RoadTiles
+          origin={origin}
+          tiles={
+            activeTiles ?? [
+              { key: 'all', tx: 0, tz: 0, ways },
+            ]
+          }
+          heightGrid={heightGrid}
+        />
         {/* Floating street names — world-space Text, cull near car (see StreetLabels). */}
         <StreetLabels streets={localStreets} heightGrid={heightGrid} />
         <RouteLine points={drapedRoute} visible={showRoute} />

@@ -108,6 +108,12 @@ function pathForDrape(path: XzPoint[], grid: HeightGrid): XzPoint[] {
  * Playtest (hills): 0.4 m bias + 1× densify still let Ground / FarGround eat
  * streets on relief slopes. Harder fix: ~1.25 m ROAD_Y_BIAS_M, 0.5× densify,
  * stronger polygonOffset / renderOrder, plus Ground trench (see roadHeights).
+ *
+ * LEARNING — ribbon vs drape split:
+ *   densify + ribbon topology depends on streets + cellSize only. Elev swaps
+ *   (same cellSize) only re-drape vertex Y — cheaper than rebuilding every
+ *   chord. RoadTiles mounts one of these per tile so a new tile never remeshes
+ *   the whole world.
  */
 export function Road({ streets, heightGrid }: RoadProps) {
   const [diff, nor] = useTexture(
@@ -115,14 +121,19 @@ export function Road({ streets, heightGrid }: RoadProps) {
     prepMaps,
   )
 
-  const built = useMemo(() => {
+  const cellSize = heightGrid.cellSize
+
+  // Topology only — skip full rebuild when elev grid identity changes.
+  const undraped = useMemo(() => {
     const paved = emptyBucket()
     const service = emptyBucket()
     const dirt: MeshArrays[] = []
+    // Fake a mini grid so pathForDrape densifies against cellSize.
+    const densifyGrid = { cellSize } as HeightGrid
 
     for (const street of streets) {
       const width = widthForHighway(street.highway)
-      const path = pathForDrape(street.points, heightGrid)
+      const path = pathForDrape(street.points, densifyGrid)
       if (street.kind === 'dirt') {
         const mesh = buildRoadRibbon(path, width, ROAD_Y_BIAS_M)
         if (mesh) dirt.push(mesh)
@@ -152,16 +163,38 @@ export function Road({ streets, heightGrid }: RoadProps) {
       }
     }
 
-    // Drape after merge — asphalt follows Terrarium hills (flat grid → no-op).
     return {
-      pavedRibbon: drapeGeometry(arraysToGeometry(mergeMeshArrays(paved.ribbon)), heightGrid),
-      pavedPaint: drapeGeometry(arraysToGeometry(mergeMeshArrays(paved.paint)), heightGrid),
-      pavedCurb: drapeGeometry(arraysToGeometry(mergeMeshArrays(paved.curb)), heightGrid),
-      serviceRibbon: drapeGeometry(arraysToGeometry(mergeMeshArrays(service.ribbon)), heightGrid),
-      serviceCurb: drapeGeometry(arraysToGeometry(mergeMeshArrays(service.curb)), heightGrid),
-      dirtRibbon: drapeGeometry(arraysToGeometry(mergeMeshArrays(dirt)), heightGrid),
+      pavedRibbon: arraysToGeometry(mergeMeshArrays(paved.ribbon)),
+      pavedPaint: arraysToGeometry(mergeMeshArrays(paved.paint)),
+      pavedCurb: arraysToGeometry(mergeMeshArrays(paved.curb)),
+      serviceRibbon: arraysToGeometry(mergeMeshArrays(service.ribbon)),
+      serviceCurb: arraysToGeometry(mergeMeshArrays(service.curb)),
+      dirtRibbon: arraysToGeometry(mergeMeshArrays(dirt)),
     }
-  }, [streets, heightGrid])
+  }, [streets, cellSize])
+
+  // Drape onto current elev — clone so undraped stays flat for next elev swap.
+  const built = useMemo(() => {
+    const drape = (g: THREE.BufferGeometry | null) => {
+      if (!g) return null
+      return drapeGeometry(g.clone(), heightGrid)
+    }
+    return {
+      pavedRibbon: drape(undraped.pavedRibbon),
+      pavedPaint: drape(undraped.pavedPaint),
+      pavedCurb: drape(undraped.pavedCurb),
+      serviceRibbon: drape(undraped.serviceRibbon),
+      serviceCurb: drape(undraped.serviceCurb),
+      dirtRibbon: drape(undraped.dirtRibbon),
+    }
+  }, [undraped, heightGrid])
+
+  useEffect(
+    () => () => {
+      for (const g of Object.values(undraped)) g?.dispose()
+    },
+    [undraped],
+  )
 
   useEffect(
     () => () => {

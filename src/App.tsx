@@ -258,6 +258,7 @@ export default function App() {
           keys={keys}
           origin={world.origin}
           ways={stream.activeWays}
+          activeTiles={stream.activeTiles}
           routePath={routeLocal}
           guidanceOn={guidanceOn && hasDestination}
           showRoute={hasDestination}

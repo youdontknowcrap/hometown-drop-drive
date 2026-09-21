@@ -6,13 +6,21 @@
  *   owns its lifetime, pushes carPose into it, and mirrors activeWays into
  *   React state so Scene + GpsDash re-render together — hard GPS rule:
  *   the dial only shows streets that are mounted in the 3D world.
+ *
+ * LEARNING — smooth apply (hitch fix):
+ *   Streamer emits once per tile package (ways + buildings). This hook does
+ *   NOT setState on every emit immediately — createApplyCoordinator coalesces
+ *   into ≤1 React commit per animation frame so Drop’s first ring doesn’t
+ *   thrash Road / Buildings three times per tile in one frame.
  */
 
 import { useEffect, useRef, useState } from 'react'
 import { carPose } from '../lib/carPose'
+import { createApplyCoordinator } from '../lib/applyCoordinator'
 import {
   startStreetStream,
   tileMathBlurb,
+  type ActiveTileWays,
   type LoadedAabb,
   type StreetTileStreamer,
 } from '../lib/streetTiles'
@@ -23,6 +31,8 @@ export type StreetStreamingState = {
   world: StreetWorld
   /** HARD GPS RULE: same ways Scene renders — never prefetch-only. */
   activeWays: StreetWay[]
+  /** Per-tile ways for incremental Road groups (Scene remeshes dirty tiles only). */
+  activeTiles: ActiveTileWays[]
   /** Buildings for active tiles only (unload with tiles). Not on GPS. */
   activeBuildings: BuildingBox[]
   buildingsMessage: string
@@ -60,6 +70,7 @@ function stateFromStreamer(streamer: StreetTileStreamer): Omit<StreetStreamingSt
   return {
     world: worldFromStreamer(streamer),
     activeWays: s.activeWays,
+    activeTiles: s.activeTiles,
     activeBuildings: s.activeBuildings,
     buildingsMessage: s.buildingsMessage,
     activeTileCount: s.activeTileCount,
@@ -83,6 +94,7 @@ const IDLE: StreetStreamingState = {
     wayCount: 0,
   },
   activeWays: [],
+  activeTiles: [],
   activeBuildings: [],
   buildingsMessage: 'Buildings: …',
   activeTileCount: 0,
@@ -107,6 +119,8 @@ export function useStreetStreaming(dropAddress: string, dropNonce: number): Stre
     let cancelled = false
     let unsub: (() => void) | null = null
     let poll = 0
+    // ≤1 mesh/data commit per frame; short coalesce merges back-to-back emits.
+    const apply = createApplyCoordinator({ coalesceMs: 40 })
 
     setState((prev) => ({ ...prev, busy: true, streamMessage: 'Loading Drop tiles…' }))
 
@@ -128,11 +142,16 @@ export function useStreetStreaming(dropAddress: string, dropNonce: number): Stre
           dropLabel: world.dropLabel || next.world.dropLabel,
           message: world.message || next.world.message,
         }
+        // First paint can be sync — user is waiting on Drop busy flag.
         setState({ ...next, busy: false })
 
         unsub = streamer.subscribe(() => {
           if (cancelled) return
-          setState({ ...stateFromStreamer(streamer), busy: false })
+          // Budgeted: coalesce tile packages into one React commit / frame.
+          apply.schedule(() => {
+            if (cancelled || !streamerRef.current) return
+            setState({ ...stateFromStreamer(streamerRef.current), busy: false })
+          })
         })
 
         // 4 Hz is enough for 1 km tiles; look-ahead uses yaw + speed so the
@@ -164,6 +183,7 @@ export function useStreetStreaming(dropAddress: string, dropNonce: number): Stre
 
     return () => {
       cancelled = true
+      apply.dispose()
       if (unsub) unsub()
       if (poll) window.clearInterval(poll)
       streamerRef.current?.dispose()

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useTexture } from '@react-three/drei'
 import { RigidBody, CuboidCollider } from '@react-three/rapier'
 import * as THREE from 'three'
@@ -19,6 +19,14 @@ const GRASS_REPEAT_M = 20
  */
 const GROUND_HALF_H = 0.5
 
+/**
+ * Debounce trench re-dig when streamed streets arrive. LEARNING: rebuilding
+ * the whole PlaneGeometry on every activeWays change was a second hitch per
+ * tile (after Road). Elev grid swaps still rebuild immediately; trench-only
+ * updates wait this quiet window so Drop’s ring can settle.
+ */
+const TRENCH_DEBOUNCE_MS = 280
+
 type GroundProps = {
   heightGrid: HeightGrid
   /**
@@ -38,6 +46,25 @@ function prepMaps(textures: THREE.Texture | THREE.Texture[]) {
   list[0].colorSpace = THREE.SRGBColorSpace
 }
 
+function applyHeightsAndTrench(
+  geo: THREE.BufferGeometry,
+  heightGrid: HeightGrid,
+  centerX: number,
+  centerZ: number,
+  roadTrenchWays: RoadSurfaceWay[],
+) {
+  const pos = geo.attributes.position
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i) + centerX
+    const z = pos.getZ(i) + centerZ
+    const y = sampleHeight(heightGrid, x, z)
+    const trench = trenchDepressionAt(x, z, roadTrenchWays)
+    pos.setY(i, y - trench)
+  }
+  pos.needsUpdate = true
+  geo.computeVertexNormals()
+}
+
 /**
  * Textured grass displaced by Terrarium/SRTM heights (or flat fallback).
  *
@@ -54,6 +81,11 @@ function prepMaps(textures: THREE.Texture | THREE.Texture[]) {
  *   under a road corridor we lower it by ROAD_TRENCH_M so asphalt sits in a
  *   shallow dug channel. sampleHeight() is untouched — Car / Buildings still
  *   pin to the sampler; only this visual mesh is depressed.
+ *
+ * LEARNING — hitch fix:
+ *   PlaneGeometry is recreated only when heightGrid changes. Trench digs from
+ *   new street tiles mutate Y in place (debounced) so streaming asphalt does
+ *   not rebuild the whole grass mesh every tile.
  */
 export function Ground({ heightGrid, roadTrenchWays = [] }: GroundProps) {
   const [diff, nor] = useTexture(
@@ -63,6 +95,9 @@ export function Ground({ heightGrid, roadTrenchWays = [] }: GroundProps) {
     ],
     prepMaps,
   )
+
+  const trenchRef = useRef(roadTrenchWays)
+  trenchRef.current = roadTrenchWays
 
   const { geometry, centerX, centerZ, size, floorY } = useMemo(() => {
     const { originX, originZ, cellSize, cols, rows } = heightGrid
@@ -78,22 +113,37 @@ export function Ground({ heightGrid, roadTrenchWays = [] }: GroundProps) {
     const geo = new THREE.PlaneGeometry(sizeX, sizeZ, segX, segZ)
     geo.rotateX(-Math.PI / 2)
 
-    const pos = geo.attributes.position
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i) + centerX
-      const z = pos.getZ(i) + centerZ
-      const y = sampleHeight(heightGrid, x, z)
-      const trench = trenchDepressionAt(x, z, roadTrenchWays)
-      pos.setY(i, y - trench)
-    }
-    pos.needsUpdate = true
-    geo.computeVertexNormals()
+    // Dig with whatever trenches we have now (elev swap = immediate).
+    applyHeightsAndTrench(geo, heightGrid, centerX, centerZ, trenchRef.current)
 
     // Safety floor under the lowest hill sample.
     const floorY = heightGrid.minRel - GROUND_HALF_H * 2
 
     return { geometry: geo, centerX, centerZ, size, floorY }
-  }, [heightGrid, roadTrenchWays])
+    // Intentionally NOT depending on roadTrenchWays — see debounced effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [heightGrid])
+
+  // Streaming streets: mutate trench in place after a quiet window.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      applyHeightsAndTrench(
+        geometry,
+        heightGrid,
+        centerX,
+        centerZ,
+        roadTrenchWays,
+      )
+    }, TRENCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(timer)
+  }, [roadTrenchWays, geometry, heightGrid, centerX, centerZ])
+
+  useEffect(
+    () => () => {
+      geometry.dispose()
+    },
+    [geometry],
+  )
 
   const tiles = Math.max(4, size / GRASS_REPEAT_M)
   diff.repeat.set(tiles, tiles)
