@@ -17,6 +17,15 @@ import {
 } from '../lib/longitudinal'
 import { sampleDriveInput, stepSteerAngle } from '../lib/driveInput'
 import {
+  AUTOPILOT_ARRIVE_M,
+  AUTOPILOT_MAX_SPEED_MPH,
+  AP_TARGET_LOWER_MPH_S,
+  AP_TARGET_RAISE_MPH_S,
+  autopilotControl,
+  followPathSnapSlide,
+  yawFromForwardXZ,
+} from '../lib/autopilot'
+import {
   relativeHeightToMsl,
   sampleHeight,
   type HeightGrid,
@@ -252,6 +261,13 @@ useGLTF.preload(SEDAN_SPORTS)
  * COAST_MPH_S so speed holds without LT/W. Brake (RT), reverse (LB), or A/✕
  * again cancel. Off-road clamp still caps the cruise target at ~55 mph.
  *
+ * --- Autopilot (Xbox Y / PS5 △ / KeyP / HUD) ---
+ * Needs the blue GPS route (`path`). Snap/slide along that polyline toward
+ * the destination — NO bicycle δ lock (Joey: arcade AP may yaw freely).
+ * Gas/brake raise/lower commanded target 0..200 mph. Reverse / toggle /
+ * arrive (~22 m) cancel. Engaging AP clears cruise; cruise stays usable
+ * when AP is off.
+ *
  * --- Off-road (soft) vs containment (hard) ---
  * Past asphalt/track half-width → desert: edge-triggered leave bump + 55 mph
  * cap (see roadSurface.ts / longitudinal OFF_ROAD_*). ~200 ft corridor walls
@@ -294,6 +310,11 @@ export function Car({
    * on + setMph = hold target. Refs only — never remount the RigidBody.
    */
   const cruise = useRef({ on: false, setMph: 0 })
+  /**
+   * Autopilot (KeyP / Y/△ / HUD). on + targetMph. Refs only — never remount.
+   * Path follow is snap/slide in useFrame (see lib/autopilot.ts).
+   */
+  const autopilot = useRef({ on: false, targetMph: 0 })
 
   /**
    * Drop-sticky RigidBody mount Y. LEARNING — @react-three/rapier syncs the
@@ -350,12 +371,15 @@ export function Car({
     wedgeFrames.current = 0
     prevXZ.current = { x: spawn[0], z: spawn[2] }
     cruise.current = { on: false, setMph: 0 }
+    autopilot.current = { on: false, targetMph: 0 }
     carPose.speedMph = 0
     carPose.metersLastSecond = 0
     carPose.elevMsl = heightGrid.spawnElevMsl
     carPose.offRoad = false
     carPose.cruiseOn = false
     carPose.cruiseMph = 0
+    carPose.autopilotOn = false
+    carPose.autopilotTargetMph = 0
     odometer.current = { x: spawn[0], z: spawn[2], acc: 0, t: 0, last: 0 }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Drop nonce only
   }, [spawnKey])
@@ -388,9 +412,37 @@ export function Car({
       else reverse = true
     }
 
+    // --- Autopilot engage / cancel (before cruise so AP clears cruise) ---
+    // LEARNING: HUD sets autopilotControl.hudToggle; we OR with KeyP / Y edge.
+    const hudApToggle = autopilotControl.hudToggle
+    if (hudApToggle) autopilotControl.hudToggle = false
+    if (autopilotControl.forceOff) {
+      autopilot.current.on = false
+      autopilotControl.forceOff = false
+    }
+    const apToggle = input.autopilotToggle || hudApToggle
+    if (apToggle) {
+      if (autopilot.current.on) {
+        autopilot.current.on = false
+      } else if (path.length >= 2) {
+        // Need a blue GPS path (Set destination). Seed target at current speed.
+        autopilot.current.on = true
+        autopilot.current.targetMph = Math.max(
+          15,
+          Math.min(AUTOPILOT_MAX_SPEED_MPH, Math.abs(signedMph.current)),
+        )
+        cruise.current.on = false // AP owns longitudinal hold
+      }
+    }
+    // Reverse always kills AP (Joey). Path cleared → drop AP.
+    if (reverse || path.length < 2) {
+      autopilot.current.on = false
+    }
+
     // --- Cruise (A / ✕ / C): edge toggle; brake or reverse always cancel ---
     // LEARNING: rising edge comes from sampleDriveInput so hold ≠ spam toggle.
-    if (input.cruiseToggle) {
+    // While AP is on, ignore cruise toggle (AP already holds a target speed).
+    if (input.cruiseToggle && !autopilot.current.on) {
       if (cruise.current.on) {
         cruise.current.on = false
       } else {
@@ -431,38 +483,84 @@ export function Car({
     wasOnRoad.current = onRoad
 
     // Sticky dirt: if already above 55 mph off-road, yank toward the cap first.
-    const speedCap = onRoad ? MAX_SPEED_MPH : OFF_ROAD_MAX_SPEED_MPH
+    // AP raises the on-road ceiling to 200; off-road still 55 (desert mud).
+    const speedCap = onRoad
+      ? autopilot.current.on
+        ? AUTOPILOT_MAX_SPEED_MPH
+        : MAX_SPEED_MPH
+      : OFF_ROAD_MAX_SPEED_MPH
     if (!onRoad) {
       signedMph.current = dragTowardOffRoadCap(signedMph.current, dt)
     }
 
-    // Off-road 50% cap still applies while cruising — clamp the hold target.
-    if (cruise.current.on) {
-      const absSet = Math.abs(cruise.current.setMph)
-      if (absSet > speedCap) {
-        cruise.current.setMph =
-          Math.sign(cruise.current.setMph || 1) * speedCap
+    // --- Longitudinal: AP target modulate OR cruise hold OR manual ---
+    // LEARNING (AP): gas/brake change commanded targetMph; we then chase it
+    // with the same stepSignedSpeedMph helper (throttle / brake / hold).
+    if (autopilot.current.on && !reverse) {
+      if (throttle) {
+        autopilot.current.targetMph = Math.min(
+          speedCap,
+          autopilot.current.targetMph + AP_TARGET_RAISE_MPH_S * dt,
+        )
       }
-    }
-    const cruiseHold =
-      cruise.current.on && !throttle && !brake && !reverse
+      if (brake) {
+        autopilot.current.targetMph = Math.max(
+          0,
+          autopilot.current.targetMph - AP_TARGET_LOWER_MPH_S * dt,
+        )
+      }
+      // Clamp target to current soft cap (off-road may yank it down).
+      autopilot.current.targetMph = Math.min(
+        speedCap,
+        Math.max(0, autopilot.current.targetMph),
+      )
 
-    signedMph.current = stepSignedSpeedMph(
-      signedMph.current,
-      throttle,
-      brake,
-      reverse,
-      dt,
-      speedCap,
-      cruiseHold,
-      cruise.current.setMph,
-    )
+      const tgt = autopilot.current.targetMph
+      const below = signedMph.current < tgt - 0.4
+      const above = signedMph.current > tgt + 0.4
+      // Pedal brake always bites; otherwise chase target like cruise.
+      const apThrottle = !brake && below
+      const apBrake = brake || above
+      const apHold = !apThrottle && !apBrake
+      signedMph.current = stepSignedSpeedMph(
+        signedMph.current,
+        apThrottle,
+        apBrake,
+        false,
+        dt,
+        speedCap,
+        apHold,
+        tgt,
+      )
+    } else {
+      // Off-road 50% cap still applies while cruising — clamp the hold target.
+      if (cruise.current.on) {
+        const absSet = Math.abs(cruise.current.setMph)
+        if (absSet > speedCap) {
+          cruise.current.setMph =
+            Math.sign(cruise.current.setMph || 1) * speedCap
+        }
+      }
+      const cruiseHold =
+        cruise.current.on && !throttle && !brake && !reverse
+
+      signedMph.current = stepSignedSpeedMph(
+        signedMph.current,
+        throttle,
+        brake,
+        reverse,
+        dt,
+        speedCap,
+        cruiseHold,
+        cruise.current.setMph,
+      )
+    }
 
     const speedMs = signedMph.current * MPH_TO_MS
 
     // --- Terrain follow: pin Y to height sample (relative to spawn elev).
     // Clearance tracks ROAD_Y_BIAS_M (roadHeights) so the body sits on asphalt.
-    const groundY = sampleHeight(heightGrid, t.x, t.z)
+    let groundY = sampleHeight(heightGrid, t.x, t.z)
     let wantY = groundY + CAR_CLEARANCE_M
 
     // Leave-bump: half-sine lift so the curb thump reads even with Y pinned.
@@ -490,6 +588,20 @@ export function Car({
     prevXZ.current = { x: t.x, z: t.z }
 
     const wedged = wedgeFrames.current >= WEDGE_FRAMES
+
+    // --- Autopilot snap/slide sample (heading + soft centerline pull) ---
+    // Done before translation write so we can place XZ on the slid pose.
+    let apFollow = null as ReturnType<typeof followPathSnapSlide> | null
+    if (autopilot.current.on && path.length >= 2 && !wedged) {
+      apFollow = followPathSnapSlide(t.x, t.z, path, speedMs, dt)
+      if (apFollow.ok && apFollow.distToEnd <= AUTOPILOT_ARRIVE_M) {
+        // Arrived near destination — disengage; leave a gentle crawl.
+        autopilot.current.on = false
+        apFollow = null
+      } else if (!apFollow.ok) {
+        apFollow = null
+      }
+    }
 
     if (wedged) {
       // Last-resort unstick: back out + lateral slide on the free XZ axis.
@@ -520,6 +632,35 @@ export function Car({
       )
       signedMph.current *= WEDGE_SPEED_KEEP
       wedgeFrames.current = 0
+    } else if (apFollow) {
+      // AP: place on soft-snapped XZ, drive along look-ahead heading.
+      // LEARNING: we intentionally skip bicycle δ — Joey wants slide-on-line,
+      // not a realistic turning radius at 200 mph.
+      // Re-sample height at the slid pose so hills stay under the tires.
+      groundY = sampleHeight(heightGrid, apFollow.x, apFollow.z)
+      let apY = groundY + CAR_CLEARANCE_M
+      if (leaveBumpT.current > 0) {
+        // leaveBumpT already decremented above; reconstruct phase from remaining.
+        const u = 1 - leaveBumpT.current / LEAVE_BUMP_DURATION_S
+        apY += LEAVE_BUMP_PEAK_M * Math.sin(Math.PI * Math.max(0, Math.min(1, u)))
+      }
+      _forward.set(apFollow.dirX, 0, apFollow.dirZ).normalize()
+      const yaw = yawFromForwardXZ(apFollow.dirX, apFollow.dirZ)
+      _euler.set(0, yaw, 0)
+      _quat.setFromEuler(_euler)
+      rb.setRotation({ x: _quat.x, y: _quat.y, z: _quat.z, w: _quat.w }, true)
+      rb.setLinvel(
+        {
+          x: _forward.x * speedMs,
+          y: 0,
+          z: _forward.z * speedMs,
+        },
+        true,
+      )
+      rb.setTranslation({ x: apFollow.x, y: apY, z: apFollow.z }, true)
+      // Keep carPose Y honest for this frame (written below uses wantY — sync).
+      wantY = apY
+      steerAngle.current = 0 // stick spring unused while AP owns heading
     } else {
       rb.setLinvel(
         {
@@ -532,46 +673,48 @@ export function Car({
       rb.setTranslation({ x: t.x, y: wantY, z: t.z }, true)
     }
 
-    // --- Bicycle steering ---
-    let steerTarget = input.steer
+    // --- Bicycle steering (manual / soft guidance only — skipped while AP) ---
+    if (!apFollow) {
+      let steerTarget = input.steer
 
-    if (guidanceOn && path.length >= 2) {
-      const hint = softSteeringHint(t.x, t.z, path)
-      if (hint && hint.strength > 0.05) {
-        const cross = _forward.x * hint.dirZ - _forward.z * hint.dirX
-        steerTarget = Math.max(
-          -1,
-          Math.min(1, steerTarget + cross * hint.strength * 2.2),
-        )
+      if (guidanceOn && path.length >= 2) {
+        const hint = softSteeringHint(t.x, t.z, path)
+        if (hint && hint.strength > 0.05) {
+          const cross = _forward.x * hint.dirZ - _forward.z * hint.dirX
+          steerTarget = Math.max(
+            -1,
+            Math.min(1, steerTarget + cross * hint.strength * 2.2),
+          )
+        }
       }
-    }
 
-    steerAngle.current = stepSteerAngle(steerAngle.current, steerTarget, dt)
+      steerAngle.current = stepSteerAngle(steerAngle.current, steerTarget, dt)
 
-    // δ from stick; ω = (v/L)*tan(δ). At v=0, ω=0 (no turn-in-place spin).
-    // While wedged this frame we already wrote escape linvel — still allow yaw
-    // so Joey can turn away, but do not re-slam forward into the wall.
-    const delta = wheelAngleRad(steerAngle.current, speedMs)
-    const yawRate = bicycleYawRate(speedMs, delta)
-    if (Math.abs(yawRate) > 1e-5) {
-      const yaw = yawRate * dtClamped
-      _yawQ.setFromAxisAngle(_yawAxis, yaw)
-      _quat.multiply(_yawQ)
-      rb.setRotation({ x: _quat.x, y: _quat.y, z: _quat.z, w: _quat.w }, true)
+      // δ from stick; ω = (v/L)*tan(δ). At v=0, ω=0 (no turn-in-place spin).
+      // While wedged this frame we already wrote escape linvel — still allow yaw
+      // so Joey can turn away, but do not re-slam forward into the wall.
+      const delta = wheelAngleRad(steerAngle.current, speedMs)
+      const yawRate = bicycleYawRate(speedMs, delta)
+      if (Math.abs(yawRate) > 1e-5) {
+        const yaw = yawRate * dtClamped
+        _yawQ.setFromAxisAngle(_yawAxis, yaw)
+        _quat.multiply(_yawQ)
+        rb.setRotation({ x: _quat.x, y: _quat.y, z: _quat.z, w: _quat.w }, true)
 
-      if (!wedged) {
-        // Re-align horizontal velocity to new forward so we don't skid sideways.
-        _forward.set(0, 0, -1).applyQuaternion(_quat)
-        _forward.y = 0
-        _forward.normalize()
-        rb.setLinvel(
-          {
-            x: _forward.x * speedMs,
-            y: 0,
-            z: _forward.z * speedMs,
-          },
-          true,
-        )
+        if (!wedged) {
+          // Re-align horizontal velocity to new forward so we don't skid sideways.
+          _forward.set(0, 0, -1).applyQuaternion(_quat)
+          _forward.y = 0
+          _forward.normalize()
+          rb.setLinvel(
+            {
+              x: _forward.x * speedMs,
+              y: 0,
+              z: _forward.z * speedMs,
+            },
+            true,
+          )
+        }
       }
     }
 
@@ -604,6 +747,10 @@ export function Car({
     carPose.offRoad = !onRoad
     carPose.cruiseOn = cruise.current.on
     carPose.cruiseMph = cruise.current.on ? cruise.current.setMph : 0
+    carPose.autopilotOn = autopilot.current.on
+    carPose.autopilotTargetMph = autopilot.current.on
+      ? autopilot.current.targetMph
+      : 0
     carPose.ready = true
   })
 

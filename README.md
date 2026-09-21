@@ -34,6 +34,7 @@ Open the URL Vite prints (usually `http://localhost:5173`). First load tries Cro
 - **S / ↓** — brake while moving forward; reverse from rest
 - **A / ←** · **D / →** — steer (wheel angle; spring-return to center on release)
 - **C** — cruise control toggle (same as Xbox **A** / PS5 **✕**)
+- **P** — autopilot toggle (same as Xbox **Y** / PS5 **△**; needs a destination)
 - **Esc** / click the 3D view — leave HUD text fields so driving works again
 
 ### USB game controller (Gamepad API)
@@ -47,6 +48,7 @@ Plug in any standard browser gamepad. Keyboard and pad work **at the same time**
 | **RT** (button 7) | Brake (toward 0 — does not tip into reverse) |
 | **LB** (button 4) | Reverse |
 | **A / ✕ Cross** (button 0, south face) | Cruise toggle — set = current mph; hold speed (no coast). Brake / reverse / press again cancel. Off-road still caps at ~55 mph. |
+| **Y / △** (button 3, north face) | Autopilot toggle — snap/slide along the blue GPS route toward the destination. Gas/brake set commanded speed 0–200 mph. Reverse / toggle / arrive cancel. Manual cap stays ~110 when AP is off. |
 
 Stick axes use a **0.22 deadzone** so resting sticks don’t drift. Steering is analog from the stick and springs back to center when released (same as releasing A/D). Hold mid-stick → hold a mid arc (bicycle model).
 
@@ -56,6 +58,7 @@ Stick axes use a **0.22 deadzone** so resting sticks don’t drift. Steering is 
 - **Set destination** — GPS path from the car to an address (while driving)
 - **Clear** — free drive, hide the blue line
 - **Guidance ON** — soft follow the blue GPS line (nearest-segment hint)
+- **Autopilot ON** — snap/slide along the blue route (no bicycle turn limit); throttle/brake modulate 0–200 mph
 - **Guidance OFF** / no destination — free drive
 
 Drive off the planned path and GPS **reroutes** (debounced). Leave asphalt/track ribbons and you get an arcade **leave bump** plus a **~50% speed cap (~55 mph)** in the desert; after ~200 ft a hard corridor wall stops the car. Ground and road textures repeat in **meters**. On-road cap **110 mph** (~18 mph/s throttle, ~28 brake, ~4 coast). **Cruise** (A / ✕ / C) disables coast so speed holds; speedo shows `CRUISE XX`.
@@ -85,6 +88,12 @@ Stick or keys set a **wheel angle** δ, not a yaw-rate joystick.
 Hold mid-stick at constant speed → constant turn **radius** (you hold the arc). Pure full-lock at 110 mph would spin like a top, so max δ shrinks with speed while the `(v/L)·tan(δ)` relationship stays.
 
 See `src/lib/longitudinal.ts` (`wheelAngleRad`, `bicycleYawRate`) and `src/components/Car.tsx`.
+
+### Autopilot snap/slide (not bicycle rails)
+
+When AP is on, the car **does not** use wheel-angle δ limits. It projects onto the blue GPS polyline, soft-snaps XZ toward the centerline, and aims yaw at a short look-ahead — arcade “travel along the route,” not a realistic turning radius. Commanded speed is a separate target (gas raises / brake lowers) capped at **200 mph**; manual + cruise stay at **110**. Cancel: reverse, toggle again, arrive near the destination, or Clear destination.
+
+See `src/lib/autopilot.ts` and `src/components/Car.tsx`.
 
 ### Building colliders vs asphalt ("stuck like a fly")
 

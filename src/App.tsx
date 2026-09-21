@@ -19,6 +19,7 @@ import {
   type WeatherPreset,
 } from './lib/weather'
 import { DEFAULT_PAINT } from './components/Car'
+import { autopilotControl } from './lib/autopilot'
 
 const DEFAULT_DROP = '235 N China Lake Blvd, Ridgecrest, CA'
 const DEFAULT_DEST = 'Eastern Sierra Blvd, Ridgecrest, CA'
@@ -117,6 +118,7 @@ export default function App() {
     setGpsStatus('idle')
     setGpsMessage('')
     setLiveWeather(null)
+    autopilotControl.forceOff = true
     setDropNonce((n) => n + 1)
     // Playtest #17: leave the address field so WASD drives immediately.
     releaseDriveFocus()
@@ -201,6 +203,8 @@ export default function App() {
     setGpsStatus('cleared')
     setGpsMessage('Destination cleared — free drive.')
     setGuidanceOn(false)
+    // Drop AP with the blue line — Car reads forceOff next frame.
+    autopilotControl.forceOff = true
     offCourseSinceRef.current = null
     reroutingRef.current = false
   }, [])

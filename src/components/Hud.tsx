@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import type { StreetWorld } from '../lib/osmStreets'
 import { WEATHER_PRESETS, type WeatherPreset } from '../lib/weather'
+import { autopilotControl } from '../lib/autopilot'
+import { carPose } from '../lib/carPose'
 import { PAINT_PRESETS } from './Car'
 
 export type GpsStatus =
@@ -383,6 +385,7 @@ export function Hud({
               />
               <span>Guidance {guidanceOn && hasDestination ? 'ON' : 'OFF'}</span>
             </label>
+            <AutopilotToggle hasDestination={hasDestination} />
           </div>
 
           <p
@@ -401,14 +404,49 @@ export function Hud({
             <kbd>S</kbd>
             <kbd>D</kbd> drive · pad: LT gas, RT brake, LB reverse (click the
             world or press <kbd>Esc</kbd> after typing). Set a destination
-            anytime. Drive off the blue line and GPS will reroute. Clear = free
-            drive. Hide this panel with <kbd>H</kbd> / <kbd>[</kbd>. Bottom-right
-            GPS defaults to <strong>Track-up</strong> (map swings under a fixed
-            car chevron — turn left, map swings right); tap the dial badge for
-            North-up.
+            anytime. <kbd>P</kbd> / pad <strong>Y/△</strong> = autopilot (snap
+            along the blue line, gas/brake set speed 0–200 mph). <kbd>C</kbd> /
+            <strong>A/✕</strong> = cruise (manual cap ~110). Drive off the blue
+            line and GPS will reroute. Clear = free drive. Hide this panel with{' '}
+            <kbd>H</kbd> / <kbd>[</kbd>. Bottom-right GPS defaults to{' '}
+            <strong>Track-up</strong> (map swings under a fixed car chevron —
+            turn left, map swings right); tap the dial badge for North-up.
           </p>
         </form>
       </div>
     </div>
+  )
+}
+
+/**
+ * Autopilot checkbox — talks to Car via autopilotControl bus (no remount).
+ * Live ON/OFF mirrors carPose so KeyP / Y and this box stay in sync.
+ */
+function AutopilotToggle({ hasDestination }: { hasDestination: boolean }) {
+  const [on, setOn] = useState(false)
+
+  useEffect(() => {
+    let raf = 0
+    const tick = () => {
+      setOn(Boolean(carPose.ready && carPose.autopilotOn))
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  return (
+    <label className="toggle">
+      <input
+        type="checkbox"
+        checked={on}
+        disabled={!hasDestination}
+        onChange={() => {
+          if (!hasDestination) return
+          autopilotControl.hudToggle = true
+        }}
+      />
+      <span>Autopilot {on && hasDestination ? 'ON' : 'OFF'}</span>
+    </label>
   )
 }

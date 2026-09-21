@@ -17,11 +17,17 @@
  * ON, longitudinal skips COAST_MPH_S burndown so speed holds without LT/W.
  * Brake (RT), reverse (LB), or A/✕ again cancel. See Car.tsx + longitudinal.
  *
+ * Autopilot (buttons[3] Y/△ / KeyP): edge toggle. Needs a GPS destination.
+ * AP owns heading (snap/slide on the blue route); gas/brake modulate the
+ * commanded speed up to 200 mph. Reverse / toggle / arrive cancel. Cruise
+ * stays separate — engaging AP clears cruise. See lib/autopilot.ts + Car.
+ *
  * Keyboard WASD still works in parallel (inputs OR together each frame):
  *   W / ↑  throttle
  *   S / ↓  brake-or-reverse (Car picks from current signed speed)
  *   A/D    steer
  *   C      cruise toggle (testing without a pad)
+ *   P      autopilot toggle
  *
  * Stick deadzone → δ=0 → bicycle yaw rate 0 → goes straight.
  * Holding mid-stick holds a mid turn: steer target tracks stick proportionally
@@ -60,6 +66,11 @@ export type DriveSample = {
    */
   cruiseToggle: boolean
   /**
+   * Rising edge: Xbox Y / PS5 △ (buttons[3]) or KeyP.
+   * Car toggles street autopilot when a destination path exists.
+   */
+  autopilotToggle: boolean
+  /**
    * −1 = right, +1 = left. This is the *normalized wheel angle demand* δ̂
    * (not a yaw-rate joystick). Car turns it into δ rad via wheelAngleRad().
    */
@@ -97,6 +108,8 @@ function clampSteer(v: number): number {
  */
 let prevCruiseBtn = false
 let prevCruiseKey = false
+let prevApBtn = false
+let prevApKey = false
 
 /**
  * Read navigator.getGamepads() and fold into keyboard state.
@@ -113,6 +126,7 @@ export function sampleDriveInput(keys: DriveKeys): DriveSample {
   let reverse = false
   const keyboardBack = keys.back
   let cruiseBtn = false
+  let apBtn = false
   let usingGamepad = false
 
   const pads =
@@ -140,10 +154,12 @@ export function sampleDriveInput(keys: DriveKeys): DriveSample {
     // --- Trigger / bumper map (Joey feel-pack) ---
     // buttons[6] LT = gas, buttons[7] RT = brake, buttons[4] LB = reverse.
     // buttons[0] A / ✕ = cruise toggle (south face on standard mapping).
+    // buttons[3] Y / △ = autopilot toggle (north face).
     const lt = p.buttons[6]?.value ?? (p.buttons[6]?.pressed ? 1 : 0)
     const rt = p.buttons[7]?.value ?? (p.buttons[7]?.pressed ? 1 : 0)
     const lb = p.buttons[4]?.pressed ?? false
     if (p.buttons[0]?.pressed) cruiseBtn = true
+    if (p.buttons[3]?.pressed) apBtn = true
 
     if (lt > 0.15) throttle = true
     if (rt > 0.15) brake = true
@@ -157,12 +173,19 @@ export function sampleDriveInput(keys: DriveKeys): DriveSample {
   prevCruiseBtn = cruiseBtn
   prevCruiseKey = cruiseKey
 
+  const apKey = keys.autopilot
+  const autopilotToggle =
+    (apBtn && !prevApBtn) || (apKey && !prevApKey)
+  prevApBtn = apBtn
+  prevApKey = apKey
+
   return {
     throttle,
     brake,
     reverse,
     keyboardBack,
     cruiseToggle,
+    autopilotToggle,
     steer: clampSteer(steer),
     usingGamepad,
   }
