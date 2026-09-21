@@ -178,13 +178,13 @@ body,
 }
 
 .gps {
-  /* Dial itself ignores clicks; toolbar button re-enables pointer events. */
+  /* Dial itself ignores clicks; toolbar / guide re-enable pointer events. */
   pointer-events: none;
   position: absolute;
   right: 1rem;
   bottom: 1rem;
   z-index: 12;
-  background: rgba(11, 28, 40, 0.88);
+  background: rgba(11, 28, 40, 0.9);
   border-radius: 12px;
   padding: 0.4rem;
   box-shadow: 0 8px 28px rgba(15, 40, 70, 0.25);
@@ -192,15 +192,21 @@ body,
   flex-direction: column;
   align-items: stretch;
   gap: 0.25rem;
+  max-width: min(340px, calc(100vw - 1.5rem));
+}
+
+.gps-expanded {
+  /* Larger panel for regional overview — still bottom-right, no Scene remount. */
+  padding: 0.5rem;
+  max-width: min(360px, calc(100vw - 1rem));
 }
 
 .gps-toolbar {
   display: flex;
-  gap: 0.35rem;
+  gap: 0.3rem;
   flex-wrap: wrap;
   align-items: center;
   pointer-events: auto;
-  display: flex;
   justify-content: flex-end;
 }
 
@@ -219,7 +225,8 @@ body,
   line-height: 1.2;
 }
 
-.gps-mode-btn:hover {
+.gps-mode-btn:hover,
+.gps-mode-btn[aria-pressed='true'] {
   border-color: #42a5f5;
   color: #fff;
 }
@@ -227,6 +234,7 @@ body,
 .gps canvas {
   display: block;
   border-radius: 8px;
+  margin-inline: auto;
 }
 
 .gps-coord {
@@ -235,6 +243,99 @@ body,
   font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
   text-align: center;
+}
+
+.gps-zoom-meta {
+  margin: 0;
+  color: rgba(207, 232, 245, 0.55);
+  font-size: 0.6rem;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
+/* Destination distance + expandable next-turn — readable while driving. */
+.gps-guide {
+  pointer-events: auto;
+  margin-top: 0.15rem;
+  padding: 0.35rem 0.45rem;
+  border-radius: 8px;
+  background: rgba(8, 22, 34, 0.92);
+  border: 1px solid rgba(66, 165, 245, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  color: #e3f2fd;
+}
+
+.gps-guide-remain {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.gps-guide-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(207, 232, 245, 0.7);
+}
+
+.gps-guide-value {
+  font-size: 1.05rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+}
+
+.gps-guide-toggle {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #90caf9;
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-align: left;
+  padding: 0.1rem 0;
+  cursor: pointer;
+}
+
+.gps-guide-toggle:hover {
+  color: #fff;
+}
+
+.gps-guide-turn {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.15rem 0.5rem;
+  align-items: baseline;
+  padding-top: 0.1rem;
+  border-top: 1px solid rgba(207, 232, 245, 0.12);
+}
+
+.gps-guide-cue {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #ffca28;
+}
+
+.gps-guide-turn-dist {
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #cfe8f5;
+  justify-self: end;
+}
+
+.gps-guide-road {
+  grid-column: 1 / -1;
+  font-size: 0.72rem;
+  color: rgba(207, 232, 245, 0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 0.9em;
 }
 
 kbd {

@@ -76,6 +76,28 @@ export default function App() {
     }
   }, [buildingsOn])
 
+  /**
+   * GPS dial live-street paint (Joey). Default ON = stream load cue on the
+   * dial. OFF hides activeWays strokes so majors/route/overlays stay readable.
+   * 3D world streets are untouched — dial-only.
+   */
+  const [gpsLiveStreetsOn, setGpsLiveStreetsOn] = useState(() => {
+    try {
+      const v = localStorage.getItem('hdd-gps-live-streets')
+      if (v == null) return true
+      return v === '1' || v === 'true'
+    } catch {
+      return true
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('hdd-gps-live-streets', gpsLiveStreetsOn ? '1' : '0')
+    } catch {
+      /* private mode */
+    }
+  }, [gpsLiveStreetsOn])
+
   const booted = useRef(false)
   /** Destination lat/lng kept for reroutes even while polyline updates. */
   const destRef = useRef<LatLng | null>(null)
@@ -211,7 +233,13 @@ export default function App() {
 
   const localWays = useMemo(
     // HARD GPS RULE: only active (Scene-mounted) ways — never prefetch cache.
-    () => stream.activeWays.map((w) => polylineToLocal(w.points, world.origin)),
+    // Keep highway/name so the dial can filter by zoom + label turns.
+    () =>
+      stream.activeWays.map((w) => ({
+        points: polylineToLocal(w.points, world.origin),
+        highway: w.highway,
+        name: w.name ?? w.ref,
+      })),
     [stream.activeWays, world.origin],
   )
 
@@ -314,6 +342,8 @@ export default function App() {
         buildingsMessage={stream.buildingsMessage}
         buildingsOn={buildingsOn}
         onBuildingsOn={setBuildingsOn}
+        gpsLiveStreetsOn={gpsLiveStreetsOn}
+        onGpsLiveStreetsOn={setGpsLiveStreetsOn}
         tilesMessage={`Tiles: ${stream.activeTileCount} loaded · streaming`}
         streamMessage={stream.streamMessage}
         queueMessage={
@@ -344,7 +374,14 @@ export default function App() {
         onClearDestination={onClearDestination}
       />
       <Speedo />
-      <GpsDash origin={world.origin} ways={localWays} route={routeLocal} />
+      <GpsDash
+        origin={world.origin}
+        ways={localWays}
+        route={routeLocal}
+        guidanceActive={hasDestination}
+        liveStreetsOn={gpsLiveStreetsOn}
+        onLiveStreetsOn={setGpsLiveStreetsOn}
+      />
     </div>
   )
 }

@@ -41,6 +41,9 @@ type HudProps = {
   /** Buildings stream ON/OFF (persisted by App). */
   buildingsOn: boolean
   onBuildingsOn: (on: boolean) => void
+  /** GPS dial: paint loaded active ways (persisted). 3D streets untouched. */
+  gpsLiveStreetsOn: boolean
+  onGpsLiveStreetsOn: (on: boolean) => void
   /** Live or preset weather summary. */
   weatherSummary?: string
   weatherPreset: WeatherPreset
@@ -120,6 +123,8 @@ export function Hud({
   queueMessage,
   buildingsOn,
   onBuildingsOn,
+  gpsLiveStreetsOn,
+  onGpsLiveStreetsOn,
   weatherSummary,
   weatherPreset,
   onWeatherPreset,
@@ -386,6 +391,14 @@ export function Hud({
               <span>Guidance {guidanceOn && hasDestination ? 'ON' : 'OFF'}</span>
             </label>
             <AutopilotToggle hasDestination={hasDestination} />
+            <label className="toggle" title="Paint loaded streets on the GPS dial only">
+              <input
+                type="checkbox"
+                checked={gpsLiveStreetsOn}
+                onChange={(e) => onGpsLiveStreetsOn(e.target.checked)}
+              />
+              <span>GPS streets {gpsLiveStreetsOn ? 'ON' : 'OFF'}</span>
+            </label>
           </div>
 
           <p
@@ -411,6 +424,10 @@ export function Hud({
             <kbd>H</kbd> / <kbd>[</kbd>. Bottom-right GPS defaults to{' '}
             <strong>Track-up</strong> (map swings under a fixed car chevron —
             turn left, map swings right); tap the dial badge for North-up.
+            GPS <strong>▢</strong> expands the dial + deeper zoom-out (tens of
+            km); <strong>Streets ON/OFF</strong> toggles live loaded ways on
+            the dial only (3D streets stay). Destination shows remaining
+            distance; expand <strong>Next turn</strong> for the cue.
           </p>
         </form>
       </div>
