@@ -362,7 +362,10 @@ export function Hud({
             <kbd>D</kbd> drive · pad: LT gas, RT brake, LB reverse (click the
             world or press <kbd>Esc</kbd> after typing). Set a destination
             anytime. Drive off the blue line and GPS will reroute. Clear = free
-            drive. Hide this panel with <kbd>H</kbd> / <kbd>[</kbd>.
+            drive. Hide this panel with <kbd>H</kbd> / <kbd>[</kbd>. Bottom-right
+            GPS defaults to <strong>Track-up</strong> (map swings under a fixed
+            car chevron — turn left, map swings right); tap the dial badge for
+            North-up.
           </p>
         </form>
       </div>
