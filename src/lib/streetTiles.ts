@@ -24,20 +24,30 @@
  *   PREFETCH_RING = 2 → outer ring may download into cache ONLY
  *   Distance > PREFETCH_RING → tile disposed
  *
+ * LEARNING — Fast Drop path (TTI / CPU spike fix):
+ *   Old path: bootstrap enqueued the whole 3×3 (+ prefetch), waited for ~5
+ *   active tiles, and routed Overpass through a Web Worker. That was slower:
+ *   Overpass is network-bound (worker can’t help), postMessage+clone added
+ *   latency, and clearing busy only after 5 tiles meant a long stall — then
+ *   nine Road meshes tried to apply and spiked CPU.
+ *
+ *   New path:
+ *     1) loadCenterTileFast() — tile (0,0) ways on **main thread**, activate,
+ *        emit ASAP → streets visible + car driveable. busy clears here.
+ *     2) Buildings for center deferred (second emit). Elev stays worker-only
+ *        (PNG decode). Far elev / neighbor buildings don’t compete with paint.
+ *     3) fillNeighborsAfterDrop() — activate/prefetch ring with MAX_IN_FLIGHT=1
+ *        (serial / quiet). applyCoordinator still ≤1 React commit per frame.
+ *
  * HARD GPS RULE (Joey lock — do not weaken):
  *   GpsDash strokes ONLY ways from tiles with status === 'active'.
  *   Prefetch may hit the network and sit in RAM, but must NEVER paint on the
  *   dial until the tile is active in Scene/Road. When a tile activates, 3D
  *   streets and GPS streets appear together — that IS the visual load cue.
  *
- * Buildings stream on the same tiles (worker Overpass) but never paint GPS.
- * Elev sliding window is Scene-side (worker elev decode) keyed off loadedAabb.
- *
- * SMOOTH APPLY (hitch fix):
- *   Worker finishes ways then buildings for a tile → ONE emit (not two).
- *   React hooks coalesce emits via applyCoordinator (≤1 setState / frame).
- *   Scene mounts Road per tile so one arrival remeshes that tile only —
- *   never the whole world asphalt in one frame.
+ * HARD LOCKS (keep):
+ *   No camera/car remount on stream (spawnKey = dropNonce only).
+ *   VERTICAL_EXAGGERATION = 1. Suspense isolation around Car.
  */
 
 import {
@@ -47,12 +57,13 @@ import {
   type LatLng,
 } from './geo'
 import {
+  fetchWaysInBbox,
   geocodeDrop,
   getDemoWorld,
   type StreetWay,
   type StreetWorld,
 } from './osmStreets'
-import { workerFetchBuildings, workerFetchWays } from './tileLoaderClient'
+import { mainFetchBuildings, mainFetchWays } from './tileLoaderClient'
 import {
   mergeActiveBuildingBoxes,
   MAX_BUILDINGS,
@@ -79,8 +90,13 @@ export const PREFETCH_RING = 2
  */
 export const ACTIVATE_LOOKAHEAD_M = 700
 
-/** Cap concurrent Overpass tile fetches — public interpreters 429 easily. */
-export const MAX_IN_FLIGHT = 2
+/**
+ * Cap concurrent Overpass tile fetches.
+ * LEARNING — Drop neighbors fill with 1 in flight so we never burst 9 tiles
+ * into applyCoordinator right after first paint. Bump to 2 only if Overpass
+ * etiquette + hitch budget still feel fine.
+ */
+export const MAX_IN_FLIGHT = 1
 
 /** Minimum gap between starting Overpass tile requests. */
 export const OVERPASS_GAP_MS = 750
@@ -95,7 +111,7 @@ export type StreetTile = {
   tz: number
   status: TileStatus
   ways: StreetWay[]
-  /** OSM building AABBs for this tile (empty until worker returns). */
+  /** OSM building AABBs for this tile (empty until deferred fetch returns). */
   buildings: BuildingBox[]
   error?: string
 }
@@ -257,7 +273,8 @@ export class StreetTileStreamer {
   private tiles = new Map<TileKey, StreetTile>()
   private queue: TileKey[] = []
   private inFlight = 0
-  private lastStartMs = 0
+  /** -Infinity so the first pump never waits on OVERPASS_GAP_MS. */
+  private lastStartMs = Number.NEGATIVE_INFINITY
   private version = 0
   private disposed = false
   private listeners = new Set<() => void>()
@@ -273,6 +290,8 @@ export class StreetTileStreamer {
   private cachedActiveKey = ''
   /** Bumped on dispose / Drop reset so late fetches are ignored. */
   private gen = 0
+  /** After center Drop paint, neighbors may fill (once). */
+  private neighborsStarted = false
 
   constructor(origin: LatLng, dropLabel: string) {
     this.origin = origin
@@ -390,13 +409,78 @@ export class StreetTileStreamer {
     this.emit()
   }
 
-  /** Drop entry: treat car as tile (0,0); load 3×3 active + prefetch ring. */
-  bootstrapAroundDrop() {
+  /**
+   * CRITICAL Drop path — center tile only, main-thread Overpass, paint ASAP.
+   *
+   * LEARNING: Do NOT enqueue the 3×3 here. Do NOT wait for buildings/elev.
+   * Ways on (0,0) → active → emit → busy clears in the React hook. Neighbors
+   * start via fillNeighborsAfterDrop() after this resolves.
+   */
+  async loadCenterTileFast(): Promise<void> {
+    if (this.disposed || this.source === 'demo') return
     this.carTx = 0
     this.carTz = 0
     this.lookTx = 0
     this.lookTz = 0
-    this.reconcile(0, 0, 0, 0, true)
+    this.neighborsStarted = false
+
+    const key = makeTileKey(0, 0)
+    const tile: StreetTile = {
+      key,
+      tx: 0,
+      tz: 0,
+      status: 'loading',
+      ways: [],
+      buildings: [],
+    }
+    this.tiles.set(key, tile)
+    this.emitMeta()
+
+    const gen = this.gen
+    const bbox = tileToBbox(0, 0, this.origin)
+
+    try {
+      // Main thread — network-bound; no worker round-trip on the critical path.
+      const ways = await fetchWaysInBbox(
+        bbox.south,
+        bbox.west,
+        bbox.north,
+        bbox.east,
+      )
+      if (this.disposed || gen !== this.gen) return
+      const live = this.tiles.get(key)
+      if (!live) return
+      live.ways = ways
+      live.status = 'active'
+      // FIRST PAINT package: ways only. Buildings deferred below.
+      this.emit()
+      console.info(
+        `[streetTiles] Drop center ready · ${ways.length} ways · neighbors next`,
+      )
+
+      // Buildings after first paint — must not compete with Road mesh apply.
+      void this.deferBuildings(live, bbox, gen)
+    } catch (err: unknown) {
+      if (this.disposed || gen !== this.gen) return
+      const live = this.tiles.get(key)
+      if (!live) return
+      live.status = 'error'
+      live.error = err instanceof Error ? err.message : 'center tile fetch failed'
+      live.ways = []
+      live.buildings = []
+      this.emit()
+      throw err
+    }
+  }
+
+  /**
+   * After center ways are painted: enqueue ACTIVE + PREFETCH rings quietly.
+   * MAX_IN_FLIGHT=1 → serial neighbor fills, no 9-mesh apply burst.
+   */
+  fillNeighborsAfterDrop() {
+    if (this.disposed || this.source === 'demo' || this.neighborsStarted) return
+    this.neighborsStarted = true
+    this.reconcile(0, 0, 0, 0, false)
   }
 
   /**
@@ -548,6 +632,13 @@ export class StreetTileStreamer {
     }
   }
 
+  /**
+   * Neighbor / look-ahead tile fetch (main-thread Overpass).
+   * LEARNING — emit WAYS first (driveable asphalt), buildings in a follow-up
+   * emit so applyCoordinator never waits on a second Overpass for first paint
+   * of that tile. Never apply 9 Road meshes in one synchronous burst — the
+   * coordinator + MAX_IN_FLIGHT=1 keep applies frame-budgeted.
+   */
   private startFetch(tile: StreetTile) {
     tile.status = 'loading'
     this.inFlight += 1
@@ -557,10 +648,7 @@ export class StreetTileStreamer {
     const gen = this.gen
     const bbox = tileToBbox(tile.tx, tile.tz, this.origin)
 
-    // Worker: Overpass + JSON parse off the render thread. Main only merges.
-    // LEARNING — ONE emit after ways + buildings (not two hitches per tile).
-    // React still coalesces further via applyCoordinator (≤1 commit / frame).
-    void workerFetchWays(bbox.south, bbox.west, bbox.north, bbox.east)
+    void mainFetchWays(bbox.south, bbox.west, bbox.north, bbox.east)
       .then(async (ways) => {
         if (this.disposed || gen !== this.gen) return
         const live = this.tiles.get(tile.key)
@@ -572,29 +660,11 @@ export class StreetTileStreamer {
         live.status =
           dCar <= ACTIVE_RING || dLook <= ACTIVE_RING ? 'active' : 'cached'
 
-        // Buildings after ways (sequential = polite to Overpass). Fail soft.
-        // Cached tiles keep buildings in RAM; only *active* union reaches Scene.
-        try {
-          const bw = await workerFetchBuildings(
-            bbox.south,
-            bbox.west,
-            bbox.north,
-            bbox.east,
-            this.origin,
-            MAX_BUILDINGS_PER_TILE,
-          )
-          if (this.disposed || gen !== this.gen) return
-          const again = this.tiles.get(tile.key)
-          if (!again) return
-          again.buildings = bw.boxes
-        } catch (err) {
-          console.warn('[streetTiles] tile buildings failed', tile.key, err)
-        }
-
-        // Single apply package: ways (+ buildings if any) → one React hitch budget.
-        if (this.disposed || gen !== this.gen) return
-        if (!this.tiles.has(tile.key)) return
+        // Ways package first — asphalt / GPS can appear without buildings.
         this.emit()
+
+        // Buildings deferred (second emit). Fail soft.
+        await this.deferBuildings(live, bbox, gen)
       })
       .catch((err: unknown) => {
         if (this.disposed || gen !== this.gen) return
@@ -610,6 +680,30 @@ export class StreetTileStreamer {
         this.inFlight = Math.max(0, this.inFlight - 1)
         this.pumpQueue()
       })
+  }
+
+  private async deferBuildings(
+    tile: StreetTile,
+    bbox: { south: number; west: number; north: number; east: number },
+    gen: number,
+  ) {
+    try {
+      const bw = await mainFetchBuildings(
+        bbox.south,
+        bbox.west,
+        bbox.north,
+        bbox.east,
+        this.origin,
+        MAX_BUILDINGS_PER_TILE,
+      )
+      if (this.disposed || gen !== this.gen) return
+      const again = this.tiles.get(tile.key)
+      if (!again) return
+      again.buildings = bw.boxes
+      this.emit()
+    } catch (err) {
+      console.warn('[streetTiles] tile buildings failed', tile.key, err)
+    }
   }
 }
 
@@ -661,45 +755,15 @@ export function tileMathBlurb(originLat: number): string {
   const n = (ACTIVE_RING * 2 + 1) ** 2
   return (
     `Tile ≈ ${TILE_M} m → Δlat ${dLat.toFixed(5)}°, Δlng ${dLng.toFixed(5)}° ` +
-    `at lat ${originLat.toFixed(3)} (active ring ${ACTIVE_RING} → ${n} tiles)`
+    `at lat ${originLat.toFixed(3)} (active ring ${ACTIVE_RING} → ${n} tiles; Drop paints center first)`
   )
 }
 
-function waitForMinActive(
-  streamer: StreetTileStreamer,
-  min: number,
-  timeoutMs: number,
-): Promise<void> {
-  return new Promise((resolve) => {
-    const t0 = performance.now()
-    let settled = false
-    const finish = () => {
-      if (settled) return
-      settled = true
-      unsub()
-      window.clearInterval(id)
-      resolve()
-    }
-    const unsub = streamer.subscribe(() => {
-      const s = streamer.snapshot()
-      if (s.activeTileCount >= min || s.source === 'demo') finish()
-    })
-    const id = window.setInterval(() => {
-      const s = streamer.snapshot()
-      if (
-        s.activeTileCount >= min ||
-        s.source === 'demo' ||
-        performance.now() - t0 > timeoutMs
-      ) {
-        finish()
-      }
-    }, 100)
-  })
-}
-
 /**
- * Drop entry: geocode → streamer → wait for at least the Drop tile.
- * Failure → demo world seeded into tile (0,0).
+ * Drop entry: geocode → center tile fast path → clear busy → neighbors quiet fill.
+ *
+ * LEARNING — ready when center ways exist (not “wait for ~5 tiles”). Elev for
+ * the center bbox and neighbor streets stream after first paint.
  */
 export async function startStreetStream(dropAddress: string): Promise<{
   streamer: StreetTileStreamer
@@ -716,11 +780,10 @@ export async function startStreetStream(dropAddress: string): Promise<{
   try {
     const drop = await geocodeDrop(q)
     const streamer = new StreetTileStreamer(drop, drop.label)
-    streamer.bootstrapAroundDrop()
-    // Prefer a few neighbors before clearing busy so Drop’s first applies
-    // coalesce under the loading flag (fewer mid-drive mesh bumps). Timeout
-    // still lets a slow Overpass hand back after the center tile.
-    await waitForMinActive(streamer, 5, 14_000)
+    // Center only — paint roads ASAP; do not gate on the full 3×3.
+    await streamer.loadCenterTileFast()
+    // Neighbors + prefetch: serial (MAX_IN_FLIGHT=1), after busy can clear.
+    streamer.fillNeighborsAfterDrop()
     const snap = streamer.snapshot()
     const world: StreetWorld = {
       origin: snap.origin,

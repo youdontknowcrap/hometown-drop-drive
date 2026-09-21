@@ -1,39 +1,23 @@
 /**
  * Message types for the tile-loader Web Worker.
  *
- * LEARNING — worker vs main:
- *   The worker owns fetch + JSON/PNG parse (Overpass, Terrarium decode,
- *   Open-Meteo elev). The main (render/input) thread only merges results into
- *   React state / Three meshes. That keeps WASD + Rapier from hitching when a
- *   ~1 km tile lands. Queue / gap etiquette for public APIs stays on main
- *   (StreetTileStreamer) so the worker never stampeding Overpass.
+ * LEARNING — worker vs main (Joey Drop TTI lesson):
+ *   Overpass fetch is **network-bound**. Parking it in a Web Worker does not
+ *   make the HTTP faster — it only adds postMessage + structured-clone cost,
+ *   then the apply coordinator still has to merge on main. So ways/buildings
+ *   stay on the **main thread** as plain async fetch (see tileLoaderClient).
+ *
+ *   The worker *is* worth it for **Terrarium PNG decode** (elevNear / elevFar):
+ *   pixel → Float32 work is CPU-bound and used to hitch React Three Fiber /
+ *   Rapier / WASD. Main only receives the HeightGrid and setState’s it.
+ *
+ *   StreetTileStreamer still owns MAX_IN_FLIGHT + OVERPASS_GAP_MS so we never
+ *   stampede public Overpass interpreters.
  */
 
-import type { LatLng } from './geo'
-import type { StreetWay } from './osmStreets'
-import type { BuildingBox } from './osmBuildings'
 import type { FarTerrainFetchOpts, HeightGrid, TerrainFetchOpts } from './terrarium'
 
 export type TileLoaderRequest =
-  | {
-      id: number
-      type: 'ways'
-      south: number
-      west: number
-      north: number
-      east: number
-    }
-  | {
-      id: number
-      type: 'buildings'
-      south: number
-      west: number
-      north: number
-      east: number
-      origin: LatLng
-      /** Soft cap for this tile (streamer also caps the active union). */
-      maxBoxes: number
-    }
   | {
       id: number
       type: 'elevNear'
@@ -45,16 +29,6 @@ export type TileLoaderRequest =
       opts: FarTerrainFetchOpts
     }
 
-export type TileLoaderWaysResult = { ways: StreetWay[] }
-
-export type TileLoaderBuildingsResult = {
-  boxes: BuildingBox[]
-  found: number
-  residentialKept: number
-  otherKept: number
-  message: string
-}
-
 /** HeightGrid over the wire — heights may be a plain array after structured clone. */
 export type TileLoaderElevResult = {
   grid: HeightGrid | null
@@ -62,18 +36,6 @@ export type TileLoaderElevResult = {
 }
 
 export type TileLoaderResponse =
-  | {
-      id: number
-      ok: true
-      type: 'ways'
-      result: TileLoaderWaysResult
-    }
-  | {
-      id: number
-      ok: true
-      type: 'buildings'
-      result: TileLoaderBuildingsResult
-    }
   | {
       id: number
       ok: true

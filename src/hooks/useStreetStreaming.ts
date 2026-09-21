@@ -7,11 +7,12 @@
  *   React state so Scene + GpsDash re-render together — hard GPS rule:
  *   the dial only shows streets that are mounted in the 3D world.
  *
- * LEARNING — smooth apply (hitch fix):
- *   Streamer emits once per tile package (ways + buildings). This hook does
- *   NOT setState on every emit immediately — createApplyCoordinator coalesces
- *   into ≤1 React commit per animation frame so Drop’s first ring doesn’t
- *   thrash Road / Buildings three times per tile in one frame.
+ * LEARNING — Fast Drop + smooth apply:
+ *   startStreetStream resolves when the **center tile** ways exist (not after
+ *   ~5 neighbors). busy clears then → streets visible + car driveable.
+ *   Neighbor tiles + buildings emit later; createApplyCoordinator coalesces
+ *   into ≤1 React commit per animation frame so we never apply 9 Road meshes
+ *   in one frame after Drop.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -122,7 +123,7 @@ export function useStreetStreaming(dropAddress: string, dropNonce: number): Stre
     // ≤1 mesh/data commit per frame; short coalesce merges back-to-back emits.
     const apply = createApplyCoordinator({ coalesceMs: 40 })
 
-    setState((prev) => ({ ...prev, busy: true, streamMessage: 'Loading Drop tiles…' }))
+    setState((prev) => ({ ...prev, busy: true, streamMessage: 'Loading Drop center…' }))
 
     // Tear down previous Drop's streamer before starting a new one.
     streamerRef.current?.dispose()
@@ -142,7 +143,7 @@ export function useStreetStreaming(dropAddress: string, dropNonce: number): Stre
           dropLabel: world.dropLabel || next.world.dropLabel,
           message: world.message || next.world.message,
         }
-        // First paint can be sync — user is waiting on Drop busy flag.
+        // Center ways ready → clear busy. Neighbors fill under apply budget.
         setState({ ...next, busy: false })
 
         unsub = streamer.subscribe(() => {

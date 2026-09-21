@@ -1,21 +1,17 @@
 /**
- * Tile-loader Web Worker — Overpass + elevation off the render thread.
+ * Tile-loader Web Worker — Terrarium / elev decode ONLY.
  *
- * LEARNING — why a worker?
- *   Main thread runs React Three Fiber, Rapier, and WASD every frame. JSON
- *   parse for a full Overpass tile (or Terrarium PNG → Float32 elev) can stall
- *   that loop for tens of ms. This worker does fetch + parse; main only merges
- *   StreetWay[] / BuildingBox[] / HeightGrid into meshes. See tileLoaderClient.
+ * LEARNING — why not Overpass here?
+ *   Drop’s first paint is gated on highway ways. Overpass is network-bound:
+ *   a worker cannot finish the HTTP sooner, and postMessage + clone of a big
+ *   StreetWay[] adds latency before main can mesh asphalt. So ways/buildings
+ *   fetch on main (async). This worker keeps CPU-heavy PNG → Float32 elev off
+ *   the render/input thread so WASD + Rapier stay smooth when hills land.
  *
- * Etiquette: StreetTileStreamer still owns MAX_IN_FLIGHT + OVERPASS_GAP_MS —
- * the worker is a compute lane, not a parallel stampede into public APIs.
+ * Etiquette: StreetTileStreamer owns MAX_IN_FLIGHT + OVERPASS_GAP_MS for OSM.
+ * Elev fetches are Scene-side (debounced / significance-gated).
  */
 
-import { fetchWaysInBbox } from '../lib/osmStreets'
-import {
-  fetchBuildingsInBbox,
-  MAX_BUILDINGS_PER_TILE,
-} from '../lib/osmBuildings'
 import { fetchElevationGrid, fetchFarElevationGrid } from '../lib/elevation'
 import type {
   TileLoaderRequest,
@@ -33,37 +29,6 @@ function cloneGrid(grid: HeightGrid): HeightGrid {
 
 async function handle(req: TileLoaderRequest): Promise<TileLoaderResponse> {
   switch (req.type) {
-    case 'ways': {
-      const ways = await fetchWaysInBbox(
-        req.south,
-        req.west,
-        req.north,
-        req.east,
-      )
-      return { id: req.id, ok: true, type: 'ways', result: { ways } }
-    }
-    case 'buildings': {
-      const bw = await fetchBuildingsInBbox(
-        req.south,
-        req.west,
-        req.north,
-        req.east,
-        req.origin,
-        req.maxBoxes ?? MAX_BUILDINGS_PER_TILE,
-      )
-      return {
-        id: req.id,
-        ok: true,
-        type: 'buildings',
-        result: {
-          boxes: bw.boxes,
-          found: bw.found,
-          residentialKept: bw.residentialKept,
-          otherKept: bw.otherKept,
-          message: bw.message,
-        },
-      }
-    }
     case 'elevNear': {
       const grid = await fetchElevationGrid(req.opts)
       return {
@@ -112,4 +77,3 @@ self.onmessage = (ev: MessageEvent<TileLoaderRequest>) => {
       ;(self as DedicatedWorkerGlobalScope).postMessage(fail)
     })
 }
-

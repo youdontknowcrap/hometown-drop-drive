@@ -4,9 +4,10 @@
  * LEARNING — why not one mega mesh?
  *   Flattening every active way into a single Road useMemo meant each new
  *   ~1 km tile remeshed the *entire* world asphalt (densify + ribbon + drape).
- *   On Drop, 3×3 completions felt like hitting a bump every time something
- *   new loaded. Per-tile groups: activate tile (3,1) → rebuild only that
- *   tile’s ribbons; neighbors keep their BufferGeometry.
+ *   On Drop we paint the center tile first, then neighbors fill serially
+ *   (MAX_IN_FLIGHT=1). Per-tile groups: activate tile (3,1) → rebuild only
+ *   that tile’s ribbons; neighbors keep their BufferGeometry — no 9-mesh
+ *   apply burst in one frame.
  *
  *   heightGrid swaps still re-drape each mounted tile (elev is debounced /
  *   significance-gated in Scene so that hitch is rare). Car / FollowCam /

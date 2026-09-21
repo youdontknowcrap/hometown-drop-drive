@@ -1,31 +1,47 @@
 /**
- * Main-thread bridge to the tile-loader Web Worker.
+ * Main-thread bridge: Overpass on main, elev decode in the Web Worker.
  *
- * LEARNING — worker vs main:
- *   Call these from StreetTileStreamer / Scene. The worker thread hits the
- *   network and parses; we await a Promise and then setState / swap HeightGrid.
- *   Car / FollowCam / Scene keys must NOT remount when results land — additive
- *   mesh/data only (Joey lock).
+ * LEARNING — Option A (preferred, Joey Drop TTI):
+ *   Overpass is network-bound. A Web Worker does not speed the HTTP; it adds
+ *   postMessage + structured clone, then applyCoordinator still merges on
+ *   main. So `mainFetchWays` / `mainFetchBuildings` are plain async on the
+ *   render thread (await yield between microtasks — UI stays responsive).
  *
- * Fallback: if Worker construction fails (odd embed), run the same functions
- * on main so Drop still works.
+ *   Terrarium PNG → Float32 *is* CPU-bound → `workerFetchElevNear/Far` keep
+ *   that off React Three Fiber / Rapier / WASD.
+ *
+ *   Critical Drop path: StreetTileStreamer.loadCenterTileFast() calls
+ *   mainFetchWays for tile (0,0) and paints ASAP — never waits on a 3×3 burst
+ *   or worker round-trip. Neighbors fill in serially afterward.
+ *
+ * Fallback: if Worker construction fails, elev runs on main too so Drop still
+ * works. Car / FollowCam / Scene keys must NOT remount when results land
+ * (Joey lock — additive mesh/data only).
  */
 
 import TileLoaderWorker from '../workers/tileLoader.worker.ts?worker'
 import type {
-  TileLoaderBuildingsResult,
   TileLoaderRequest,
   TileLoaderResponse,
-  TileLoaderWaysResult,
 } from './tileLoaderProtocol'
 import type { LatLng } from './geo'
-import type { FarTerrainFetchOpts, HeightGrid, TerrainFetchOpts } from './terrarium'
+import type { StreetWay } from './osmStreets'
 import { fetchWaysInBbox } from './osmStreets'
 import {
   fetchBuildingsInBbox,
   MAX_BUILDINGS_PER_TILE,
+  type BuildingBox,
 } from './osmBuildings'
+import type { FarTerrainFetchOpts, HeightGrid, TerrainFetchOpts } from './terrarium'
 import { fetchElevationGrid, fetchFarElevationGrid } from './elevation'
+
+export type MainBuildingsResult = {
+  boxes: BuildingBox[]
+  found: number
+  residentialKept: number
+  otherKept: number
+  message: string
+}
 
 type Pending = {
   resolve: (v: TileLoaderResponse) => void
@@ -51,7 +67,7 @@ function ensureWorker(): Worker | null {
       p.resolve(res)
     }
     worker.onerror = (err) => {
-      console.warn('[tileLoader] worker error — falling back to main', err)
+      console.warn('[tileLoader] worker error — elev falls back to main', err)
       workerFailed = true
       for (const [id, p] of pending) {
         pending.delete(id)
@@ -65,11 +81,11 @@ function ensureWorker(): Worker | null {
       worker = null
     }
     console.info(
-      '[tileLoader] Web Worker ready — Overpass/elev parse off render thread',
+      '[tileLoader] Web Worker ready — Terrarium/elev decode only (Overpass stays main)',
     )
     return worker
   } catch (err) {
-    console.warn('[tileLoader] Worker unavailable, main-thread fallback', err)
+    console.warn('[tileLoader] Worker unavailable, elev on main', err)
     workerFailed = true
     return null
   }
@@ -87,7 +103,7 @@ function post(req: RequestBody): Promise<TileLoaderResponse> {
   const id = nextId++
   const full = { ...req, id } as TileLoaderRequest
   if (!w) {
-    return runOnMain(full)
+    return runElevOnMain(full)
   }
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject, type: full.type })
@@ -95,40 +111,9 @@ function post(req: RequestBody): Promise<TileLoaderResponse> {
   })
 }
 
-async function runOnMain(req: TileLoaderRequest): Promise<TileLoaderResponse> {
+async function runElevOnMain(req: TileLoaderRequest): Promise<TileLoaderResponse> {
   try {
     switch (req.type) {
-      case 'ways': {
-        const ways = await fetchWaysInBbox(
-          req.south,
-          req.west,
-          req.north,
-          req.east,
-        )
-        return { id: req.id, ok: true, type: 'ways', result: { ways } }
-      }
-      case 'buildings': {
-        const bw = await fetchBuildingsInBbox(
-          req.south,
-          req.west,
-          req.north,
-          req.east,
-          req.origin,
-          req.maxBoxes,
-        )
-        return {
-          id: req.id,
-          ok: true,
-          type: 'buildings',
-          result: {
-            boxes: bw.boxes,
-            found: bw.found,
-            residentialKept: bw.residentialKept,
-            otherKept: bw.otherKept,
-            message: bw.message,
-          },
-        }
-      }
       case 'elevNear': {
         const grid = await fetchElevationGrid(req.opts)
         return { id: req.id, ok: true, type: 'elevNear', result: { grid } }
@@ -148,7 +133,6 @@ async function runOnMain(req: TileLoaderRequest): Promise<TileLoaderResponse> {
   }
 }
 
-
 /** Normalize heights after structured clone (may arrive as Array). */
 function reviveGrid(grid: HeightGrid | null): HeightGrid | null {
   if (!grid) return null
@@ -159,19 +143,51 @@ function reviveGrid(grid: HeightGrid | null): HeightGrid | null {
   }
 }
 
-export async function workerFetchWays(
+/**
+ * Overpass highways — always main-thread async (network-bound; no worker).
+ * Used by Drop center fast path and neighbor tile fills.
+ */
+export async function mainFetchWays(
   south: number,
   west: number,
   north: number,
   east: number,
-): Promise<TileLoaderWaysResult['ways']> {
-  const res = await post({ type: 'ways', south, west, north, east })
-  if (!res.ok || res.type !== 'ways') {
-    throw new Error(!res.ok ? res.error : 'unexpected response')
-  }
-  return res.result.ways
+): Promise<StreetWay[]> {
+  return fetchWaysInBbox(south, west, north, east)
 }
 
+/**
+ * Overpass buildings — main thread, deferred until after ways paint.
+ * Never block Drop TTI on this.
+ */
+export async function mainFetchBuildings(
+  south: number,
+  west: number,
+  north: number,
+  east: number,
+  origin: LatLng,
+  maxBoxes = MAX_BUILDINGS_PER_TILE,
+): Promise<MainBuildingsResult> {
+  const bw = await fetchBuildingsInBbox(
+    south,
+    west,
+    north,
+    east,
+    origin,
+    maxBoxes,
+  )
+  return {
+    boxes: bw.boxes,
+    found: bw.found,
+    residentialKept: bw.residentialKept,
+    otherKept: bw.otherKept,
+    message: bw.message,
+  }
+}
+
+/** @deprecated alias — keep call sites readable during the worker→main cutover. */
+export const workerFetchWays = mainFetchWays
+/** @deprecated alias — buildings are main-thread now. */
 export async function workerFetchBuildings(
   south: number,
   west: number,
@@ -179,20 +195,8 @@ export async function workerFetchBuildings(
   east: number,
   origin: LatLng,
   maxBoxes = MAX_BUILDINGS_PER_TILE,
-): Promise<TileLoaderBuildingsResult> {
-  const res = await post({
-    type: 'buildings',
-    south,
-    west,
-    north,
-    east,
-    origin,
-    maxBoxes,
-  })
-  if (!res.ok || res.type !== 'buildings') {
-    throw new Error(!res.ok ? res.error : 'unexpected response')
-  }
-  return res.result
+): Promise<MainBuildingsResult> {
+  return mainFetchBuildings(south, west, north, east, origin, maxBoxes)
 }
 
 export async function workerFetchElevNear(
@@ -217,7 +221,7 @@ export async function workerFetchElevFar(
   return reviveGrid(res.result.grid)
 }
 
-/** True once the worker constructed (for HUD / console teaching). */
+/** True once the elev worker constructed (for HUD / console teaching). */
 export function tileLoaderUsesWorker(): boolean {
   ensureWorker()
   return !workerFailed && worker != null

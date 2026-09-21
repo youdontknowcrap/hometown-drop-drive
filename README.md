@@ -62,7 +62,9 @@ Speedo shows **true mph** plus an optional **meters-last-second** sanity line (`
 
 ## Streaming + worker load
 
-Street tiles (~1 km) activate around the car; **buildings** and a **sliding near height grid** follow the same active AABB (far skyline recenters as you drive). Overpass / Terrarium / Open-Meteo **parse runs in a Web Worker** (`tileLoader.worker.ts`) so the render/input thread only merges results — tile loads must not remount Car / FollowCam / Scene.
+**Fast Drop:** paint the **center ~1 km tile** first (Overpass ways on the **main thread** — network-bound, so a worker cannot speed it up). `busy` clears when center ways exist; the car is driveable ASAP. Neighbors fill **serially** (`MAX_IN_FLIGHT=1`) under a frame-budgeted apply coordinator — no 3×3 burst / CPU spike. Buildings and far elev are deferred after first paint.
+
+**Worker role:** Terrarium PNG → Float32 elev decode only (`tileLoader.worker.ts`). Overpass ways/buildings stay main-thread async. Tile stream must not remount Car / FollowCam / Scene (`spawnKey` = Drop nonce only; `VERTICAL_EXAGGERATION` = 1).
 
 ## Learning notes
 

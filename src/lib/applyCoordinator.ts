@@ -2,10 +2,11 @@
  * Frame-budgeted apply coordinator for streamed tile meshes.
  *
  * LEARNING — why coalesce?
- *   Workers finish fetch/decode off-thread, but main still has to setState and
- *   rebuild Road / Ground / Buildings. If every tile completion (and every
- *   buildings follow-up) calls setState immediately, React + three.js dump
- *   several mesh rebuilds in one frame — Joey feels a “bump” per tile.
+ *   Overpass finishes on main (async), elev decode in the worker — but main
+ *   still has to setState and rebuild Road / Ground / Buildings. If every tile
+ *   completion (and every buildings follow-up) calls setState immediately,
+ *   React + three.js dump several mesh rebuilds in one frame — Joey feels a
+ *   “bump” per tile.
  *
  *   This coordinator:
  *     1) Coalesces many schedule() calls into ONE pending job (latest wins).
@@ -14,7 +15,8 @@
  *     3) Optionally waits a short coalesce window so ways + buildings that
  *        finish back-to-back become a single apply.
  *
- *   Fetch/decode stays in the worker. Main only applies the budgeted job.
+ *   Combined with Drop’s center-first path + MAX_IN_FLIGHT=1, neighbors land
+ *   quietly after first paint instead of a CPU spike.
  */
 
 export type ApplyCoordinatorOptions = {

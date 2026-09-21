@@ -224,16 +224,20 @@ export function Scene({
    * Sliding near height grid + far skyline (worker elev decode).
    *
    * LEARNING — worker vs main:
-   *   Terrarium PNG decode / Open-Meteo upsample run in the tile-loader worker.
-   *   Main only setState’s the HeightGrid. Ground rebuilds verts via useMemo;
+   *   Terrarium PNG decode / Open-Meteo upsample run in the tile-loader worker
+   *   (CPU-bound — worth offloading). Overpass ways stay on main. Main only
+   *   setState’s the HeightGrid. Ground rebuilds verts via useMemo;
    *   Car / FollowCam keep spawnKey=routeVersion (Drop only) — elev swaps must
    *   NOT remount the RigidBody or camera (Joey lock).
    *
-   * LEARNING — hitch fix (elev):
-   *   Do NOT rebuild Ground on every tiny AABB edge twitch as Drop’s 3×3
-   *   activates. Debounce + only refresh when the soft-edge AABB grows by
-   *   ≥ ~½ tile vs the last fetched box (or first load). lockedSpawnElevMsl
-   *   keeps relative heights stable so the car Y pin does not “pop”.
+   * LEARNING — hitch fix (elev) + Fast Drop:
+   *   Drop paints center-tile ways first; elev follows the center AABB, then
+   *   expands as neighbors activate. Do NOT rebuild Ground on every tiny AABB
+   *   edge twitch. Debounce + only refresh when the soft-edge AABB grows by
+   *   ≥ ~½ tile vs the last fetched box (or first load). Far elev runs after
+   *   near succeeds — deferred, not competing with first paint.
+   *   lockedSpawnElevMsl keeps relative heights stable so the car Y pin does
+   *   not “pop”. VERTICAL_EXAGGERATION = 1 (fidelity lock).
    */
   const spawnElevLockRef = useRef<number | null>(null)
   const elevGenRef = useRef(0)
@@ -255,8 +259,8 @@ export function Scene({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Drop-only reset
   }, [routeVersion, origin.lat, origin.lng])
 
-  // Near elev: debounce + significance gate so Drop’s 3×3 doesn’t swap Ground
-  // nine times. Car Y pin + spawnElevLock keep drive feel continuous.
+  // Near elev: debounce + significance gate so neighbor expands don’t swap
+  // Ground every tile. First fetch is center AABB after Drop. Far elev after.
   useEffect(() => {
     let cancelled = false
     const span = TILE_M * (PREFETCH_RING + 1)
@@ -286,7 +290,7 @@ export function Scene({
     }
 
     const gen = ++elevGenRef.current
-    // Longer quiet window — let several tile activates coalesce into one fetch.
+    // Quiet window — center Drop AABB first; neighbor expands coalesce later.
     const timer = window.setTimeout(() => {
       if (cancelled) return
       // Re-check after debounce: another expand may have landed.
@@ -341,7 +345,7 @@ export function Scene({
           onFarTerrainMessage?.('Far terrain: unavailable')
         }
       })
-    }, 700)
+    }, 450)
 
     return () => {
       cancelled = true

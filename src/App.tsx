@@ -125,8 +125,9 @@ export default function App() {
     if (!origin.lat && !origin.lng) return
     void fetchLocalWeather(origin).then(setLiveWeather)
     console.info('[stream]', stream.tileMath, {
-      worker: tileLoaderUsesWorker(),
+      elevWorker: tileLoaderUsesWorker(), // Terrarium decode only; Overpass = main
       relief: `${VERTICAL_EXAGGERATION}× fidelity`,
+      drop: 'center-tile first → neighbors serial',
     })
   }, [stream.world.origin.lat, stream.world.origin.lng, stream.streaming])
 
