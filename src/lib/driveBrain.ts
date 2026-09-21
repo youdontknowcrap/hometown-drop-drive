@@ -30,11 +30,20 @@ import {
   followPathSnapSlide,
   type AutopilotFollow,
 } from './autopilot'
-import { isLikelyCrowFlight, type LoadedWayPoly } from './streetGraph'
+import {
+  isLikelyCrowFlight,
+  nearestCenterlineOnWays,
+  type LoadedWayPoly,
+} from './streetGraph'
 import {
   MAX_SPEED_MPH,
   OFF_ROAD_MAX_SPEED_MPH,
 } from './longitudinal'
+
+/** A short tile-stream gap is tolerated; a sustained gap stops AP. */
+export const AP_WAYS_MISSING_FRAMES = 18
+/** Search radius for a loaded centerline under/near the car. */
+const AP_NEAR_CAR_WAY_M = 48
 
 /** World pose the brain may read (no Rapier handles). */
 export type DriveBrainPose = {
@@ -54,6 +63,12 @@ export type DriveBrainState = {
   apOn: boolean
   /** Commanded AP speed target (mph, 0..200). */
   apTargetMph: number
+  /** AP safety memory: consecutive frames with no loaded way near the car. */
+  apMissingWayFrames: number
+  /** Latched until the player re-engages AP on a safe path or drives manually. */
+  apFailsafe: boolean
+  /** Short reason shown by the HUD after an AP stop. */
+  apFailsafeReason: string
 }
 
 /** One-path-truth route the AP policy follows (aligned loaded centerlines). */
@@ -109,6 +124,9 @@ export function defaultDriveBrainState(): DriveBrainState {
     cruiseMph: 0,
     apOn: false,
     apTargetMph: 0,
+    apMissingWayFrames: 0,
+    apFailsafe: false,
+    apFailsafeReason: '',
   }
 }
 
@@ -153,6 +171,9 @@ export function tickDriveBrain(
     cruiseMph: state.cruiseMph,
     apOn: state.apOn,
     apTargetMph: state.apTargetMph,
+    apMissingWayFrames: state.apMissingWayFrames,
+    apFailsafe: state.apFailsafe,
+    apFailsafeReason: state.apFailsafeReason,
   }
 
   const { throttle, brake, reverse } = pedals
@@ -162,16 +183,26 @@ export function tickDriveBrain(
   if (hudApToggle) autopilotControl.hudToggle = false
   if (autopilotControl.forceOff) {
     next.apOn = false
+    next.apFailsafe = false
+    next.apFailsafeReason = ''
+    next.apMissingWayFrames = 0
     autopilotControl.forceOff = false
   }
   const apToggle = input.autopilotToggle || hudApToggle
   if (apToggle) {
     if (next.apOn) {
+      // Intentional player disengage is not an AP failure.
       next.apOn = false
+      next.apFailsafe = false
+      next.apFailsafeReason = ''
+      next.apMissingWayFrames = 0
     } else if (path.length >= 2 && !isLikelyCrowFlight(path)) {
       // LEARNING — never engage AP on geodesic straight-fallback. OSRM spines
       // and near-car splices have enough vertices / arc to pass this gate.
       next.apOn = true
+      next.apFailsafe = false
+      next.apFailsafeReason = ''
+      next.apMissingWayFrames = 0
       next.apTargetMph = Math.max(
         15,
         Math.min(AUTOPILOT_MAX_SPEED_MPH, Math.abs(pose.signedMph)),
@@ -179,8 +210,23 @@ export function tickDriveBrain(
       next.cruiseOn = false
     }
   }
-  if (reverse || path.length < 2 || isLikelyCrowFlight(path)) {
+
+  // A route can become unsafe after AP is engaged (tile unload, a rejected
+  // splice, or a fallback path). Do not keep rolling on the old intent.
+  if (next.apOn && !reverse && path.length < 2) {
+    enterApFailsafe(next, 'AP failed — no safe path. Stopped.')
+  } else if (next.apOn && !reverse && isLikelyCrowFlight(path)) {
+    enterApFailsafe(next, 'AP failed — unsafe path. Stopped.')
+  } else if (reverse) {
     next.apOn = false
+    next.apMissingWayFrames = 0
+  }
+
+  // Once AP has stopped, a deliberate gas/reverse input hands control back to
+  // the player. With no input, keep commanding brake until the car is still.
+  if (next.apFailsafe && !next.apOn && (throttle || reverse)) {
+    next.apFailsafe = false
+    next.apFailsafeReason = ''
   }
 
   // --- Cruise (A / ✕ / C): edge toggle; brake or reverse always cancel ---
@@ -194,6 +240,16 @@ export function tickDriveBrain(
   }
   if (brake || reverse) {
     next.cruiseOn = false
+  }
+
+  // A failsafe owns the longitudinal command until the player chooses manual
+  // gas/reverse. This is intentionally a brake command, not a coast.
+  if (next.apFailsafe && !next.apOn) {
+    next.cruiseOn = false
+    return {
+      state: next,
+      command: apFailsafeCommand(input.steer),
+    }
   }
 
   // --- Speed cap + off-road policy ---
@@ -266,6 +322,30 @@ export function tickDriveBrain(
   }
 }
 
+function enterApFailsafe(state: DriveBrainState, reason: string): void {
+  state.apOn = false
+  state.apTargetMph = 0
+  state.apMissingWayFrames = 0
+  state.apFailsafe = true
+  state.apFailsafeReason = reason
+  state.cruiseOn = false
+}
+
+function apFailsafeCommand(steer: number): DriveBrainCommand {
+  return {
+    mode: 'manual',
+    steer,
+    throttle: false,
+    brake: true,
+    reverse: false,
+    cruiseHold: false,
+    cruiseTargetMph: 0,
+    speedCapMph: MAX_SPEED_MPH,
+    apFollow: null,
+    skipOffRoadPenalty: false,
+  }
+}
+
 /**
  * Autopilot policy: modulate target mph with gas/brake; emit snap/slide follow.
  * Arrive (~AUTOPILOT_ARRIVE_M) clears apOn via state mutation on the command path —
@@ -300,14 +380,44 @@ function autopilotPolicy(
 
   const speedMs = pose.signedMph * 0.44704
   let apFollow: AutopilotFollow | null = null
-  if (path.length >= 2 && !reverse) {
-    const follow = followPathSnapSlide(pose.x, pose.z, path, speedMs, dt, centerlineWays)
-    if (follow.ok && follow.distToEnd <= AUTOPILOT_ARRIVE_M) {
-      state.apOn = false
-      apFollow = null
-    } else if (follow.ok) {
-      apFollow = follow
-    }
+
+  // A streaming hole is tolerated briefly, but AP may not continue indefinitely
+  // without a loaded street under the car. This catches tile unloads separately
+  // from a bad route geometry result.
+  const nearWay = nearestCenterlineOnWays(
+    centerlineWays ?? [],
+    pose.x,
+    pose.z,
+    AP_NEAR_CAR_WAY_M,
+  )
+  state.apMissingWayFrames = nearWay ? 0 : state.apMissingWayFrames + 1
+  if (state.apMissingWayFrames >= AP_WAYS_MISSING_FRAMES) {
+    enterApFailsafe(state, 'AP failed — street data missing. Stopped.')
+    return apFailsafeCommand(steer)
+  }
+
+  if (path.length < 2 || reverse) {
+    enterApFailsafe(state, 'AP failed — no safe path. Stopped.')
+    return apFailsafeCommand(steer)
+  }
+
+  const follow = followPathSnapSlide(
+    pose.x,
+    pose.z,
+    path,
+    speedMs,
+    dt,
+    centerlineWays,
+  )
+  if (!follow.ok) {
+    enterApFailsafe(state, 'AP failed — path not publishable. Stopped.')
+    return apFailsafeCommand(steer)
+  }
+  if (follow.distToEnd <= AUTOPILOT_ARRIVE_M) {
+    state.apOn = false
+    apFollow = null
+  } else {
+    apFollow = follow
   }
 
   // Chase target like cruise: throttle below, brake above / pedal brake.

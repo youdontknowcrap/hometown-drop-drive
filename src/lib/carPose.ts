@@ -47,5 +47,9 @@ export const carPose = {
   autopilotOn: false,
   /** Commanded AP speed target (mph, 0..200). */
   autopilotTargetMph: 0,
+  /** True after AP rejected an unsafe path and commanded a controlled stop. */
+  autopilotFailsafe: false,
+  /** Short HUD cue describing why AP stopped. */
+  autopilotFailsafeMessage: '',
   ready: false,
 }

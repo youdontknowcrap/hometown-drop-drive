@@ -515,6 +515,23 @@ kbd {
   box-shadow: 0 0 12px rgba(126, 87, 194, 0.5);
 }
 
+.speedo-failsafe {
+  margin: 0.35rem 0 0;
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #3b0000;
+  background: linear-gradient(90deg, #ff8a80, #ff5252);
+  box-shadow: 0 0 14px rgba(255, 82, 82, 0.65);
+}
+
+.speedo[data-failsafe='1'] {
+  box-shadow: 0 8px 28px rgba(15, 40, 70, 0.25), 0 0 0 2px rgba(255, 82, 82, 0.8);
+}
+
 .speedo[data-cruise='1'] {
   box-shadow: 0 8px 28px rgba(15, 40, 70, 0.25), 0 0 0 2px rgba(79, 195, 247, 0.55);
 }

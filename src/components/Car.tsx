@@ -403,6 +403,9 @@ export function Car({
         cruiseMph: carPose.cruiseMph,
         apOn: carPose.autopilotOn,
         apTargetMph: carPose.autopilotTargetMph,
+        apMissingWayFrames: 0,
+        apFailsafe: carPose.autopilotFailsafe,
+        apFailsafeReason: carPose.autopilotFailsafeMessage,
       }
       return
     }
@@ -422,6 +425,8 @@ export function Car({
     carPose.cruiseMph = 0
     carPose.autopilotOn = false
     carPose.autopilotTargetMph = 0
+    carPose.autopilotFailsafe = false
+    carPose.autopilotFailsafeMessage = ''
     odometer.current = { x: spawn[0], z: spawn[2], acc: 0, t: 0, last: 0 }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Drop nonce only
   }, [spawnKey])
@@ -706,6 +711,8 @@ export function Car({
     carPose.cruiseMph = bs.cruiseOn ? bs.cruiseMph : 0
     carPose.autopilotOn = bs.apOn
     carPose.autopilotTargetMph = bs.apOn ? bs.apTargetMph : 0
+    carPose.autopilotFailsafe = bs.apFailsafe
+    carPose.autopilotFailsafeMessage = bs.apFailsafeReason
     carPose.ready = true
   })
 

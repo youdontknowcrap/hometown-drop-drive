@@ -139,7 +139,13 @@ export function followPathSnapSlide(
       target.z,
       AP_OFF_ASPHALT_M + 24,
     )
-    if (la && la.dist > AP_OFF_ASPHALT_M) {
+    // The near path is not publishable if its look-ahead has no loaded
+    // centerline to validate or re-snap against. AP must brake instead of
+    // aiming at an unverified OSRM/crow-flight point.
+    if (!la) {
+      return { ...fail, distToEnd, lateralM: hit.distance }
+    }
+    if (la.dist > AP_OFF_ASPHALT_M) {
       target = { x: la.x, z: la.z }
       // Flip tangent if it points away from path progress.
       const prog = Math.hypot(dirX, dirZ) > 1e-6
