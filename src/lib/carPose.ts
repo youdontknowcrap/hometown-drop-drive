@@ -33,5 +33,12 @@ export const carPose = {
    * is still RoadContainment.
    */
   offRoad: false,
+  /**
+   * Arcade cruise control active (Xbox A / PS5 ✕ / KeyC). Speedo shows
+   * "CRUISE XX" from cruiseMph while set.
+   */
+  cruiseOn: false,
+  /** Signed set speed (mph) while cruiseOn — the hold target. */
+  cruiseMph: 0,
   ready: false,
 }

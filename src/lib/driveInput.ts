@@ -5,6 +5,7 @@
  *   buttons[6]  LT  Left trigger   → GAS (throttle)
  *   buttons[7]  RT  Right trigger  → BRAKE (toward 0, no reverse)
  *   buttons[4]  LB  Left bumper    → REVERSE
+ *   buttons[0]  A / ✕ Cross (south face) → CRUISE toggle (edge)
  *   axes[0]     Left stick X       → steer (−1 left … +1 right on hardware)
  *   buttons[14]/[15] D-pad L/R     → steer
  *
@@ -12,10 +13,15 @@
  * it frees LB for an explicit reverse so brake no longer "tips into reverse"
  * the way the old combined LT mapping did.
  *
+ * Cruise (buttons[0] / KeyC): edge-triggered set/clear of a hold-speed. While
+ * ON, longitudinal skips COAST_MPH_S burndown so speed holds without LT/W.
+ * Brake (RT), reverse (LB), or A/✕ again cancel. See Car.tsx + longitudinal.
+ *
  * Keyboard WASD still works in parallel (inputs OR together each frame):
  *   W / ↑  throttle
  *   S / ↓  brake-or-reverse (Car picks from current signed speed)
  *   A/D    steer
+ *   C      cruise toggle (testing without a pad)
  *
  * Stick deadzone → δ=0 → bicycle yaw rate 0 → goes straight.
  * Holding mid-stick holds a mid turn: steer target tracks stick proportionally
@@ -49,6 +55,11 @@ export type DriveSample = {
    */
   keyboardBack: boolean
   /**
+   * Rising edge this frame: Xbox A / PS5 ✕ (buttons[0]) or KeyC.
+   * Car toggles cruise ON (set = current signed mph) / OFF. Not a held level.
+   */
+  cruiseToggle: boolean
+  /**
    * −1 = right, +1 = left. This is the *normalized wheel angle demand* δ̂
    * (not a yaw-rate joystick). Car turns it into δ rad via wheelAngleRad().
    */
@@ -81,6 +92,13 @@ function clampSteer(v: number): number {
 }
 
 /**
+ * Previous-frame press for rising-edge cruise toggle.
+ * Module state is fine here: one drive sample path, one player.
+ */
+let prevCruiseBtn = false
+let prevCruiseKey = false
+
+/**
  * Read navigator.getGamepads() and fold into keyboard state.
  * Safe to call every frame from useFrame; no allocations of note.
  */
@@ -94,6 +112,7 @@ export function sampleDriveInput(keys: DriveKeys): DriveSample {
   let brake = false
   let reverse = false
   const keyboardBack = keys.back
+  let cruiseBtn = false
   let usingGamepad = false
 
   const pads =
@@ -120,20 +139,30 @@ export function sampleDriveInput(keys: DriveKeys): DriveSample {
 
     // --- Trigger / bumper map (Joey feel-pack) ---
     // buttons[6] LT = gas, buttons[7] RT = brake, buttons[4] LB = reverse.
+    // buttons[0] A / ✕ = cruise toggle (south face on standard mapping).
     const lt = p.buttons[6]?.value ?? (p.buttons[6]?.pressed ? 1 : 0)
     const rt = p.buttons[7]?.value ?? (p.buttons[7]?.pressed ? 1 : 0)
     const lb = p.buttons[4]?.pressed ?? false
+    if (p.buttons[0]?.pressed) cruiseBtn = true
 
     if (lt > 0.15) throttle = true
     if (rt > 0.15) brake = true
     if (lb) reverse = true
   }
 
+  // Rising edge only — hold does not spam toggle every frame.
+  const cruiseKey = keys.cruise
+  const cruiseToggle =
+    (cruiseBtn && !prevCruiseBtn) || (cruiseKey && !prevCruiseKey)
+  prevCruiseBtn = cruiseBtn
+  prevCruiseKey = cruiseKey
+
   return {
     throttle,
     brake,
     reverse,
     keyboardBack,
+    cruiseToggle,
     steer: clampSteer(steer),
     usingGamepad,
   }

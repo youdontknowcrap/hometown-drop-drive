@@ -33,6 +33,7 @@ Open the URL Vite prints (usually `http://localhost:5173`). First load tries Cro
 - **W / ↑** — accelerate
 - **S / ↓** — brake while moving forward; reverse from rest
 - **A / ←** · **D / →** — steer (wheel angle; spring-return to center on release)
+- **C** — cruise control toggle (same as Xbox **A** / PS5 **✕**)
 - **Esc** / click the 3D view — leave HUD text fields so driving works again
 
 ### USB game controller (Gamepad API)
@@ -45,6 +46,7 @@ Plug in any standard browser gamepad. Keyboard and pad work **at the same time**
 | **LT** (button 6) | Gas / throttle |
 | **RT** (button 7) | Brake (toward 0 — does not tip into reverse) |
 | **LB** (button 4) | Reverse |
+| **A / ✕ Cross** (button 0, south face) | Cruise toggle — set = current mph; hold speed (no coast). Brake / reverse / press again cancel. Off-road still caps at ~55 mph. |
 
 Stick axes use a **0.22 deadzone** so resting sticks don’t drift. Steering is analog from the stick and springs back to center when released (same as releasing A/D). Hold mid-stick → hold a mid arc (bicycle model).
 
@@ -56,7 +58,7 @@ Stick axes use a **0.22 deadzone** so resting sticks don’t drift. Steering is 
 - **Guidance ON** — soft follow the blue GPS line (nearest-segment hint)
 - **Guidance OFF** / no destination — free drive
 
-Drive off the planned path and GPS **reroutes** (debounced). Leave asphalt/track ribbons and you get an arcade **leave bump** plus a **~50% speed cap (~55 mph)** in the desert; after ~200 ft a hard corridor wall stops the car. Ground and road textures repeat in **meters**. On-road cap **110 mph** (~18 mph/s throttle, ~28 brake, ~4 coast).
+Drive off the planned path and GPS **reroutes** (debounced). Leave asphalt/track ribbons and you get an arcade **leave bump** plus a **~50% speed cap (~55 mph)** in the desert; after ~200 ft a hard corridor wall stops the car. Ground and road textures repeat in **meters**. On-road cap **110 mph** (~18 mph/s throttle, ~28 brake, ~4 coast). **Cruise** (A / ✕ / C) disables coast so speed holds; speedo shows `CRUISE XX`.
 
 Speedo shows **true mph** plus an optional **meters-last-second** sanity line (`≈ mph × 0.447`). We do not fake units — if 110 “doesn’t feel fast,” pull the chase cam back.
 
@@ -183,7 +185,7 @@ Now the centerline is a **dark asphalt ribbon** (not desert-with-rails): ~7.2 m 
 - Kenney CC0 sedan (sports GLB sitting there as a second skin, no picker yet)
 - Dark paved asphalt ribbon + lane paint + curb accents (dirt tracks stay brown)
 - Terrarium/SRTM hills under the street box (flat fallback offline)
-- Arcade signed-speed drive + bicycle-model steering; WASD **and** USB gamepad (LT/RT/LB)
+- Arcade signed-speed drive + bicycle-model steering; WASD **and** USB gamepad (LT/RT/LB + A/✕ cruise)
 - Live OSM street when the proxy works
 - Demo fallback with length shown in the HUD
 - Soft guidance (nearest segment + look-ahead meters), not rails

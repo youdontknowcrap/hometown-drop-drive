@@ -6,6 +6,8 @@ export type DriveKeys = {
   back: boolean
   left: boolean
   right: boolean
+  /** Held KeyC — cruise toggle is edge-detected in sampleDriveInput. */
+  cruise: boolean
 }
 
 const EMPTY: DriveKeys = {
@@ -13,6 +15,7 @@ const EMPTY: DriveKeys = {
   back: false,
   left: false,
   right: false,
+  cruise: false,
 }
 
 /** True only when the user is typing in a text field (not range/checkbox). */
@@ -64,6 +67,10 @@ function mapKey(code: string, pressed: boolean, state: DriveKeys): void {
     case 'KeyD':
     case 'ArrowRight':
       state.right = pressed
+      break
+    case 'KeyC':
+      // Cruise toggle (same as Xbox A / PS5 ✕). Edge in sampleDriveInput.
+      state.cruise = pressed
       break
     default:
       break

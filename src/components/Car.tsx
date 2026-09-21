@@ -247,6 +247,11 @@ useGLTF.preload(SEDAN_SPORTS)
  * turn *radius* at that speed (you hold the arc). Release to deadzone →
  * δ→0 → ω→0 → straight. That is the standard arcade-sim bicycle model.
  *
+ * --- Cruise control (Xbox A / PS5 ✕ / KeyC) ---
+ * Edge toggle sets hold = current signed mph; while ON, longitudinal skips
+ * COAST_MPH_S so speed holds without LT/W. Brake (RT), reverse (LB), or A/✕
+ * again cancel. Off-road clamp still caps the cruise target at ~55 mph.
+ *
  * --- Off-road (soft) vs containment (hard) ---
  * Past asphalt/track half-width → desert: edge-triggered leave bump + 55 mph
  * cap (see roadSurface.ts / longitudinal OFF_ROAD_*). ~200 ft corridor walls
@@ -284,6 +289,11 @@ export function Car({
   const wedgeFrames = useRef(0)
   /** Prior-frame XZ for wedge displacement check. */
   const prevXZ = useRef({ x: spawn[0], z: spawn[2] })
+  /**
+   * Arcade cruise control (Xbox A / PS5 ✕ / KeyC).
+   * on + setMph = hold target. Refs only — never remount the RigidBody.
+   */
+  const cruise = useRef({ on: false, setMph: 0 })
 
   /**
    * Drop-sticky RigidBody mount Y. LEARNING — @react-three/rapier syncs the
@@ -339,10 +349,13 @@ export function Car({
     leaveBumpT.current = 0
     wedgeFrames.current = 0
     prevXZ.current = { x: spawn[0], z: spawn[2] }
+    cruise.current = { on: false, setMph: 0 }
     carPose.speedMph = 0
     carPose.metersLastSecond = 0
     carPose.elevMsl = heightGrid.spawnElevMsl
     carPose.offRoad = false
+    carPose.cruiseOn = false
+    carPose.cruiseMph = 0
     odometer.current = { x: spawn[0], z: spawn[2], acc: 0, t: 0, last: 0 }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Drop nonce only
   }, [spawnKey])
@@ -373,6 +386,20 @@ export function Car({
       // WASD: S brakes while rolling forward, reverses from rest / while backing.
       if (signedMph.current > 0.05) brake = true
       else reverse = true
+    }
+
+    // --- Cruise (A / ✕ / C): edge toggle; brake or reverse always cancel ---
+    // LEARNING: rising edge comes from sampleDriveInput so hold ≠ spam toggle.
+    if (input.cruiseToggle) {
+      if (cruise.current.on) {
+        cruise.current.on = false
+      } else {
+        cruise.current.on = true
+        cruise.current.setMph = signedMph.current
+      }
+    }
+    if (brake || reverse) {
+      cruise.current.on = false
     }
 
     const t = rb.translation()
@@ -409,6 +436,17 @@ export function Car({
       signedMph.current = dragTowardOffRoadCap(signedMph.current, dt)
     }
 
+    // Off-road 50% cap still applies while cruising — clamp the hold target.
+    if (cruise.current.on) {
+      const absSet = Math.abs(cruise.current.setMph)
+      if (absSet > speedCap) {
+        cruise.current.setMph =
+          Math.sign(cruise.current.setMph || 1) * speedCap
+      }
+    }
+    const cruiseHold =
+      cruise.current.on && !throttle && !brake && !reverse
+
     signedMph.current = stepSignedSpeedMph(
       signedMph.current,
       throttle,
@@ -416,6 +454,8 @@ export function Car({
       reverse,
       dt,
       speedCap,
+      cruiseHold,
+      cruise.current.setMph,
     )
 
     const speedMs = signedMph.current * MPH_TO_MS
@@ -562,6 +602,8 @@ export function Car({
     carPose.groundY = groundY
     carPose.elevMsl = relativeHeightToMsl(heightGrid, groundY)
     carPose.offRoad = !onRoad
+    carPose.cruiseOn = cruise.current.on
+    carPose.cruiseMph = cruise.current.on ? cruise.current.setMph : 0
     carPose.ready = true
   })
 

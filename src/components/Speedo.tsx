@@ -15,6 +15,8 @@ import { MAX_SPEED_MPH, MPH_TO_MS } from '../lib/longitudinal'
  *   so basin hills read in a toy chase cam. The speedo undoes that factor
  *   (see carPose.elevMsl / relativeHeightToMsl) so the number matches the
  *   Terrarium HUD "spawn … m MSL" honesty — fidelity mesh, survey readout.
+ *
+ * Cruise line: "CRUISE XX" while carPose.cruiseOn (Xbox A / PS5 ✕ / KeyC).
  */
 export function Speedo() {
   const valueRef = useRef<HTMLSpanElement>(null)
@@ -22,6 +24,7 @@ export function Speedo() {
   const sanityRef = useRef<HTMLParagraphElement>(null)
   const altRef = useRef<HTMLParagraphElement>(null)
   const offRoadRef = useRef<HTMLParagraphElement>(null)
+  const cruiseRef = useRef<HTMLParagraphElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -56,8 +59,18 @@ export function Speedo() {
       if (offRoadRef.current) {
         offRoadRef.current.hidden = !offRoad
       }
+      const cruiseOn = carPose.ready && carPose.cruiseOn
+      if (cruiseRef.current) {
+        cruiseRef.current.hidden = !cruiseOn
+        if (cruiseOn) {
+          cruiseRef.current.textContent = `CRUISE ${Math.round(
+            Math.abs(carPose.cruiseMph),
+          )}`
+        }
+      }
       if (rootRef.current) {
         rootRef.current.dataset.offroad = offRoad ? '1' : '0'
+        rootRef.current.dataset.cruise = cruiseOn ? '1' : '0'
       }
       raf = requestAnimationFrame(tick)
     }
@@ -70,6 +83,7 @@ export function Speedo() {
       ref={rootRef}
       className="speedo"
       data-offroad="0"
+      data-cruise="0"
       aria-live="polite"
       title="Speed (mph) + altitude MSL — true scale"
     >
@@ -85,6 +99,9 @@ export function Speedo() {
       <p className="speedo-cap">cap {MAX_SPEED_MPH}</p>
       <p className="speedo-offroad" ref={offRoadRef} hidden>
         OFF ROAD −50%
+      </p>
+      <p className="speedo-cruise" ref={cruiseRef} hidden>
+        CRUISE 0
       </p>
       <p
         className="speedo-alt"

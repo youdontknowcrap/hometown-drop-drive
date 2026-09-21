@@ -386,6 +386,31 @@ kbd {
   box-shadow: 0 0 12px rgba(255, 138, 101, 0.45);
 }
 
+.speedo-cruise {
+  margin: 0.35rem 0 0;
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  color: #0d2137;
+  background: linear-gradient(90deg, #80deea, #4fc3f7);
+  box-shadow: 0 0 12px rgba(79, 195, 247, 0.45);
+}
+
+.speedo[data-cruise='1'] {
+  box-shadow: 0 8px 28px rgba(15, 40, 70, 0.25), 0 0 0 2px rgba(79, 195, 247, 0.55);
+}
+
+.speedo[data-offroad='1'][data-cruise='1'] {
+  box-shadow:
+    0 8px 28px rgba(15, 40, 70, 0.25),
+    0 0 0 2px rgba(255, 138, 101, 0.55),
+    0 0 0 4px rgba(79, 195, 247, 0.4);
+}
+
 .speedo[data-offroad='1'] {
   box-shadow: 0 8px 28px rgba(15, 40, 70, 0.25), 0 0 0 2px rgba(255, 138, 101, 0.55);
 }

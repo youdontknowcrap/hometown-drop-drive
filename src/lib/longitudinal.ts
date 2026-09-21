@@ -14,8 +14,13 @@
  * WHY punchier? The old +5/−8 felt like a grocery cart. Real-ish 0–60 for a
  * family arcade toy sits around 3–4 s — still readable for kids, not a rocket.
  *
- * Gamepad (see driveInput.ts): LT = throttle, RT = brake, LB = reverse.
- * Keyboard: W = throttle; S = brake while moving forward, reverse from rest.
+ * Gamepad (see driveInput.ts): LT = throttle, RT = brake, LB = reverse,
+ *   A / ✕ (buttons[0]) = cruise toggle.
+ * Keyboard: W = throttle; S = brake while moving forward, reverse from rest;
+ *   C = cruise toggle.
+ *
+ * Cruise hold: when cruiseHold is true and no pedals are down, skip
+ * COAST_MPH_S burndown and keep cruiseTargetMph so speed holds without LT/W.
  */
 
 export const MPH_TO_MS = 0.44704
@@ -59,6 +64,12 @@ function clampDt(dt: number): number {
  *   brake    → always toward 0 (never crosses into the other direction)
  *   reverse  → accelerate −mph
  * If throttle + reverse both held, throttle wins (safer default).
+ *
+ * LEARNING — cruise hold (Joey 2026-09-21):
+ *   Real CC holds a set speed without the pedal. Arcade version: while
+ *   cruiseHold && no pedals, skip COAST_MPH_S and keep cruiseTargetMph.
+ *   Brake / reverse / toggle-off clear cruise in Car.tsx (not here).
+ *   Off-road: Car clamps the target to OFF_ROAD_MAX before calling us.
  */
 export function stepSignedSpeedMph(
   signedMph: number,
@@ -68,6 +79,13 @@ export function stepSignedSpeedMph(
   dt: number,
   /** Soft cap (on-road 110, off-road ~55). Defaults to product max. */
   maxSpeedMph: number = MAX_SPEED_MPH,
+  /**
+   * When true and no pedals: hold cruiseTargetMph (no coast burndown).
+   * Pedals still win — throttle can raise speed; brake/reverse run normally.
+   */
+  cruiseHold: boolean = false,
+  /** Signed mph to hold while cruiseHold (Car keeps this clamped to cap). */
+  cruiseTargetMph: number = 0,
 ): number {
   const t = clampDt(dt)
   let next = signedMph
@@ -111,6 +129,9 @@ export function stepSignedSpeedMph(
     } else {
       next = signedMph - THROTTLE_MPH_S * t
     }
+  } else if (cruiseHold) {
+    // Cruise ON, no pedals — hold set speed (disable COAST_MPH_S burndown).
+    next = cruiseTargetMph
   } else {
     // Coast — always decay toward 0; never overshoot stop.
     if (Math.abs(signedMph) <= REST_EPS) return 0
@@ -123,7 +144,14 @@ export function stepSignedSpeedMph(
     }
   }
 
-  if (Math.abs(next) < REST_EPS && !wantForward && !wantReverse) next = 0
+  if (
+    Math.abs(next) < REST_EPS &&
+    !wantForward &&
+    !wantReverse &&
+    !cruiseHold
+  ) {
+    next = 0
+  }
 
   const cap = Math.max(1, Math.min(MAX_SPEED_MPH, maxSpeedMph))
   return Math.max(-cap, Math.min(cap, next))
