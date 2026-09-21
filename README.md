@@ -78,6 +78,12 @@ Hold mid-stick at constant speed → constant turn **radius** (you hold the arc)
 
 See `src/lib/longitudinal.ts` (`wheelAngleRad`, `bicycleYawRate`) and `src/components/Car.tsx`.
 
+### Building colliders vs asphalt ("stuck like a fly")
+
+Arcade drive authors `setLinvel` every frame. OSM building footprints become **axis-aligned** boxes; houses near streets often overlap the roadway. Rapier then blocks translation while yaw still works — spin in place on invisible flypaper.
+
+Mitigations: inset CuboidColliders vs the visual mesh (`COLLIDER_INSET_M`), skip solids that kiss a road ribbon (`clearRoadOverlappingSolidColliders`), and a Car escape hatch if authored speed produces almost no XZ displacement for several frames. Visual houses stay full size; warehouses set back from the curb still bump. The ~200 ft `RoadContainment` corridor is unchanged.
+
 ### Longitudinal rates
 
 Signed speed along the nose (mph), written into Rapier each frame:

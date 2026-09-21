@@ -22,10 +22,20 @@
  *   - Cap total boxes (AABB + optional colliders).
  *   - Solid CuboidColliders only for near / large boxes; far small houses
  *     are visual-only so Rapier stays cheap (see Buildings.tsx).
+ *
+ * "Stuck like a fly" (arcade + AABB):
+ *   Car.tsx authors setLinvel every frame. OSM footprints become axis-aligned
+ *   boxes — houses near streets often OVERLAP the roadway. Rapier then blocks
+ *   translation while yaw still works → spin-in-place flypaper.
+ *   Mitigations (Buildings.tsx + clearRoadOverlappingSolidColliders):
+ *     1) Inset collider half-extents vs visual (~COLLIDER_INSET_M).
+ *     2) Skip solidCollider when the AABB kisses a road ribbon.
+ *     3) Car escape hatch if still wedged (authored speed, no displacement).
  */
 
 import { latLngToLocal, metersPerDegree, type LatLng } from './geo'
 import { overpassInterpreter } from './osmApi'
+import type { RoadSurfaceWay } from './roadSurface'
 
 /** Soft cap — neighborhood scenery; raised so houses survive the budget. */
 export const MAX_BUILDINGS = 450
@@ -61,6 +71,20 @@ const LEVEL_HEIGHT_M = 3.0
  */
 export const SOLID_COLLIDER_NEAREST = 140
 export const SOLID_COLLIDER_MIN_AREA_M2 = 180
+
+/**
+ * Shrink CuboidCollider vs the visual mesh (meters per half-axis).
+ * Visual stays full footprint; physics pulls back from the curb so AABB
+ * houses that spill onto asphalt don't eat the driveable lane.
+ */
+export const COLLIDER_INSET_M = 0.85
+
+/**
+ * Extra meters beyond roadSurface halfWidth when deciding "this box sits on
+ * asphalt." ≈ car half-width + curb slack — prefer clearing a sticky collider
+ * over leaving flypaper on the ribbon.
+ */
+export const BUILDING_ROAD_CLEAR_MARGIN_M = 1.6
 
 /** Explicit residential / house tags (OSM building=* vocabulary). */
 const RESIDENTIAL_TAGS = new Set([
@@ -271,6 +295,111 @@ function assignSolidColliders(boxes: ScoredBox[]): BuildingBox[] {
     residential: b.residential,
     solidCollider: solidSet.has(b),
   }))
+}
+
+
+/** Distance from point to XZ AABB (0 if inside). */
+function distPointToAabbXZ(
+  px: number,
+  pz: number,
+  cx: number,
+  cz: number,
+  halfW: number,
+  halfD: number,
+): number {
+  const dx = Math.max(Math.abs(px - cx) - halfW, 0)
+  const dz = Math.max(Math.abs(pz - cz) - halfD, 0)
+  return Math.hypot(dx, dz)
+}
+
+/**
+ * Min distance from a centerline segment to an XZ AABB.
+ * Samples ~2 m along the segment (teaching-clear, cheap enough at Drop scale).
+ */
+function minDistSegToAabb(
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  cx: number,
+  cz: number,
+  halfW: number,
+  halfD: number,
+): number {
+  const len = Math.hypot(bx - ax, bz - az)
+  const steps = Math.max(1, Math.ceil(len / 2))
+  let min = Infinity
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    const px = ax + (bx - ax) * t
+    const pz = az + (bz - az) * t
+    min = Math.min(min, distPointToAabbXZ(px, pz, cx, cz, halfW, halfD))
+    if (min === 0) return 0
+  }
+  return min
+}
+
+/**
+ * True when the building AABB comes within (way.halfWidthM + margin) of any
+ * street centerline — i.e. the solid box would block driveable asphalt.
+ */
+export function buildingAabbOverlapsRoad(
+  box: Pick<BuildingBox, 'x' | 'z' | 'width' | 'depth'>,
+  ways: RoadSurfaceWay[],
+  marginM = BUILDING_ROAD_CLEAR_MARGIN_M,
+): boolean {
+  const halfW = box.width * 0.5
+  const halfD = box.depth * 0.5
+  for (const way of ways) {
+    const clear = way.halfWidthM + marginM
+    const clear2 = clear * clear
+    const pts = way.points
+    for (let i = 1; i < pts.length; i++) {
+      const ax = pts[i - 1]![0]
+      const az = pts[i - 1]![2]
+      const bx = pts[i]![0]
+      const bz = pts[i]![2]
+      // Cheap reject: circle around segment midpoint vs AABB circumcircle.
+      const mx = (ax + bx) * 0.5
+      const mz = (az + bz) * 0.5
+      const segHalf = Math.hypot(bx - ax, bz - az) * 0.5
+      const aabbR = Math.hypot(halfW, halfD)
+      const reject = clear + segHalf + aabbR
+      const dx = box.x - mx
+      const dz = box.z - mz
+      if (dx * dx + dz * dz > reject * reject) continue
+      const d = minDistSegToAabb(ax, az, bx, bz, box.x, box.z, halfW, halfD)
+      if (d * d <= clear2) return true
+    }
+  }
+  return false
+}
+
+/**
+ * Turn off solidCollider for boxes that kiss the road ribbon.
+ * Visual meshes stay; Joey keeps bumping warehouses set back from the curb.
+ * Call from Scene once roadSurfaceWays exist (buildings fetch is fire-and-forget).
+ */
+export function clearRoadOverlappingSolidColliders(
+  boxes: BuildingBox[],
+  ways: RoadSurfaceWay[],
+  marginM = BUILDING_ROAD_CLEAR_MARGIN_M,
+): BuildingBox[] {
+  if (!boxes.length || !ways.length) return boxes
+  let cleared = 0
+  const out = boxes.map((b) => {
+    if (!b.solidCollider) return b
+    if (!buildingAabbOverlapsRoad(b, ways, marginM)) return b
+    cleared++
+    return { ...b, solidCollider: false }
+  })
+  if (cleared > 0) {
+    console.info('[buildings] cleared road-overlapping solid colliders', {
+      cleared,
+      solidLeft: out.filter((b) => b.solidCollider).length,
+    })
+  }
+  return out
 }
 
 /**

@@ -1,7 +1,10 @@
 import { useMemo } from 'react'
 import { RigidBody, CuboidCollider } from '@react-three/rapier'
 import { sampleHeight, type HeightGrid } from '../lib/terrarium'
-import type { BuildingBox } from '../lib/osmBuildings'
+import {
+  COLLIDER_INSET_M,
+  type BuildingBox,
+} from '../lib/osmBuildings'
 
 type BuildingsProps = {
   boxes: BuildingBox[]
@@ -13,12 +16,19 @@ type BuildingsProps = {
 /**
  * Extruded AABB building boxes on the height grid.
  *
- * LEARNING — selective colliders:
+ * LEARNING — selective colliders + inset:
  *   Visual meshes are cheap; Rapier CuboidColliders are not when you keep
  *   hundreds of houses. osmBuildings marks solidCollider=true for the nearest
- *   N boxes and large footprints (landmarks). Far small houses are mesh-only
- *   so the neighborhood looks full without melting the physics step.
- *   Joey still bumps into what he drives past near Drop / big boxes.
+ *   N boxes and large footprints (landmarks), then Scene clears any solid that
+ *   overlaps a road ribbon (clearRoadOverlappingSolidColliders).
+ *
+ *   WHY inset half-extents?
+ *   OSM footprints → axis-aligned boxes. Houses near streets often spill onto
+ *   asphalt. If the collider matches the visual 1:1, arcade setLinvel (Car.tsx)
+ *   fights a fixed wall every frame → translation blocked, yaw still works
+ *   ("stuck like a fly"). Pull physics in by COLLIDER_INSET_M; mesh stays full.
+ *
+ *   Friction is low so a glancing bump doesn't glue the car to the wall.
  *
  * Y sits on sampleHeight so boxes follow hills. No interiors, no ripped assets.
  */
@@ -40,6 +50,12 @@ export function Buildings({ boxes, heightGrid, version }: BuildingsProps) {
         const hue = b.residential ? 28 + (i % 5) * 3 : 22 + (i % 7) * 4
         const lightness = b.residential ? 46 + (i % 4) * 3 : 40 + (i % 5) * 4
         const color = `hsl(${hue}, 18%, ${lightness}%)`
+
+        // Inset collider vs visual; skip if inset would go non-positive.
+        const hx = Math.max(0.05, b.width * 0.5 - COLLIDER_INSET_M)
+        const hz = Math.max(0.05, b.depth * 0.5 - COLLIDER_INSET_M)
+        const hy = b.height * 0.5
+
         return (
           <group key={i} position={[b.x, y, b.z]}>
             <mesh castShadow receiveShadow>
@@ -50,11 +66,10 @@ export function Buildings({ boxes, heightGrid, version }: BuildingsProps) {
                 metalness={0.05}
               />
             </mesh>
-            {/* Solid collider only when flagged — half-extents match the visual. */}
             {b.solidCollider ? (
               <CuboidCollider
-                args={[b.width * 0.5, b.height * 0.5, b.depth * 0.5]}
-                friction={0.6}
+                args={[hx, hy, hz]}
+                friction={0.15}
                 restitution={0}
               />
             ) : null}

@@ -17,7 +17,10 @@ import { polylineToLocal, type LatLng } from '../lib/geo'
 import { nearestOnNetwork, networkBounds } from '../lib/roadMesh'
 import type { StreetWay } from '../lib/osmStreets'
 import { buildRoadSurfaceWays } from '../lib/roadSurface'
-import type { BuildingBox } from '../lib/osmBuildings'
+import {
+  clearRoadOverlappingSolidColliders,
+  type BuildingBox,
+} from '../lib/osmBuildings'
 import {
   flatHeightGrid,
   sampleHeight,
@@ -101,6 +104,16 @@ export function Scene({
   const roadSurfaceWays = useMemo(
     () => buildRoadSurfaceWays(localStreets),
     [localStreets],
+  )
+
+  /**
+   * Drop solid colliders that overlap asphalt. Buildings fetch is async and
+   * does not see ways; once both exist, clear road-kissing AABBs so arcade
+   * drive does not hit invisible flypaper on residential streets.
+   */
+  const driveableBuildings = useMemo(
+    () => clearRoadOverlappingSolidColliders(buildings, roadSurfaceWays),
+    [buildings, roadSurfaceWays],
   )
 
   const bounds = useMemo(() => networkBounds(localWays), [localWays])
@@ -269,7 +282,7 @@ export function Scene({
             reliefM={Math.max(0, heightGrid.maxRel - heightGrid.minRel)}
           />
           <Buildings
-            boxes={buildings}
+            boxes={driveableBuildings}
             heightGrid={heightGrid}
             version={routeVersion}
           />

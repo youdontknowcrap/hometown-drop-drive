@@ -46,6 +46,26 @@ const LEAVE_BUMP_PEAK_M = 1.45
 const LEAVE_BUMP_SPEED_KEEP = 0.82
 
 /**
+ * Escape hatch — "stuck like a fly".
+ *
+ * Arcade drive sets linvel every frame. When a fixed CuboidCollider (building
+ * AABB that spilled onto asphalt, or a corner wedge) blocks XZ, Rapier refuses
+ * translation but our authored yaw still runs → spin in place.
+ *
+ * Detect: |authored mph| > ε AND world XZ displacement ≪ expected for N frames.
+ * Then: back out along −forward, slide on the free lateral axis, soften speed.
+ * Primary fix is inset + road-overlap skip in Buildings / osmBuildings; this is
+ * the last-resort unstick so a rare jam does not soft-lock Joey.
+ */
+const WEDGE_SPEED_EPS_MPH = 2
+const WEDGE_DISP_RATIO = 0.08 // displacement / expected move
+const WEDGE_DISP_FLOOR_M = 0.015
+const WEDGE_FRAMES = 12
+const WEDGE_BACK_M = 0.45
+const WEDGE_LATERAL_MS = 2.8
+const WEDGE_SPEED_KEEP = 0.55
+
+/**
  * Kenney Car Kit already ships a sportier GLB (`sedan-sports.glb`) with a
  * spoiler + lower stance. We used the drab `sedan.glb` before — switch the
  * default to sports for a teen STEM racer vibe (still CC0, no game rips).
@@ -226,6 +246,11 @@ useGLTF.preload(SEDAN_SPORTS)
  * Past asphalt/track half-width → desert: edge-triggered leave bump + 55 mph
  * cap (see roadSurface.ts / longitudinal OFF_ROAD_*). ~200 ft corridor walls
  * from RoadContainment stay as the hard fence — soft feel does not replace them.
+ *
+ * --- Building flypaper ---
+ * Solid building AABBs that overlap asphalt used to pin XZ while yaw spun.
+ * Primary fix: inset + skip road-kissing solids (Buildings / osmBuildings).
+ * WEDGE_* below is the escape hatch if still jammed against a real mass.
  */
 export function Car({
   keys,
@@ -249,6 +274,10 @@ export function Car({
   const wasOnRoad = useRef(true)
   /** Seconds left in the leave-bump half-sine (0 = idle). */
   const leaveBumpT = useRef(0)
+  /** Consecutive frames: authored speed but almost no world XZ move. */
+  const wedgeFrames = useRef(0)
+  /** Prior-frame XZ for wedge displacement check. */
+  const prevXZ = useRef({ x: spawn[0], z: spawn[2] })
 
   // Fresh drop / respawn — zero authored speed with the new RigidBody.
   useEffect(() => {
@@ -256,6 +285,8 @@ export function Car({
     steerAngle.current = 0
     wasOnRoad.current = true
     leaveBumpT.current = 0
+    wedgeFrames.current = 0
+    prevXZ.current = { x: spawn[0], z: spawn[2] }
     carPose.speedMph = 0
     carPose.metersLastSecond = 0
     carPose.elevMsl = heightGrid.spawnElevMsl
@@ -332,15 +363,64 @@ export function Car({
     }
     // Honest MSL for the speedo: undo VERTICAL_EXAGGERATION baked into groundY.
 
-    rb.setLinvel(
-      {
-        x: _forward.x * speedMs,
-        y: 0, // authored horizontal drive; Y is pinned below
-        z: _forward.z * speedMs,
-      },
-      true,
-    )
-    rb.setTranslation({ x: t.x, y: wantY, z: t.z }, true)
+    // --- Wedge detect (before we author another push into the wall) ---
+    const disp = Math.hypot(t.x - prevXZ.current.x, t.z - prevXZ.current.z)
+    const dtClamped = Math.min(dt, 0.05)
+    const expectedMove = Math.abs(signedMph.current) * MPH_TO_MS * dtClamped
+    const wantingMove = Math.abs(signedMph.current) >= WEDGE_SPEED_EPS_MPH
+    if (
+      wantingMove &&
+      expectedMove > 0.04 &&
+      disp < Math.max(WEDGE_DISP_FLOOR_M, expectedMove * WEDGE_DISP_RATIO)
+    ) {
+      wedgeFrames.current += 1
+    } else {
+      wedgeFrames.current = 0
+    }
+    prevXZ.current = { x: t.x, z: t.z }
+
+    const wedged = wedgeFrames.current >= WEDGE_FRAMES
+
+    if (wedged) {
+      // Last-resort unstick: back out + lateral slide on the free XZ axis.
+      // Steer picks the side when possible; otherwise default +1.
+      const side =
+        Math.abs(steerAngle.current) > 0.05
+          ? Math.sign(steerAngle.current)
+          : 1
+      const latX = -_forward.z * side
+      const latZ = _forward.x * side
+      const back = Math.sign(signedMph.current || 1) // back opposite of travel
+      rb.setTranslation(
+        {
+          x: t.x - _forward.x * WEDGE_BACK_M * back + latX * 0.2,
+          y: wantY,
+          z: t.z - _forward.z * WEDGE_BACK_M * back + latZ * 0.2,
+        },
+        true,
+      )
+      const escapeMs = Math.min(Math.abs(speedMs), WEDGE_LATERAL_MS)
+      rb.setLinvel(
+        {
+          x: latX * escapeMs - _forward.x * escapeMs * 0.35 * back,
+          y: 0,
+          z: latZ * escapeMs - _forward.z * escapeMs * 0.35 * back,
+        },
+        true,
+      )
+      signedMph.current *= WEDGE_SPEED_KEEP
+      wedgeFrames.current = 0
+    } else {
+      rb.setLinvel(
+        {
+          x: _forward.x * speedMs,
+          y: 0, // authored horizontal drive; Y is pinned below
+          z: _forward.z * speedMs,
+        },
+        true,
+      )
+      rb.setTranslation({ x: t.x, y: wantY, z: t.z }, true)
+    }
 
     // --- Bicycle steering ---
     let steerTarget = input.steer
@@ -359,26 +439,30 @@ export function Car({
     steerAngle.current = stepSteerAngle(steerAngle.current, steerTarget, dt)
 
     // δ from stick; ω = (v/L)*tan(δ). At v=0, ω=0 (no turn-in-place spin).
+    // While wedged this frame we already wrote escape linvel — still allow yaw
+    // so Joey can turn away, but do not re-slam forward into the wall.
     const delta = wheelAngleRad(steerAngle.current, speedMs)
     const yawRate = bicycleYawRate(speedMs, delta)
     if (Math.abs(yawRate) > 1e-5) {
-      const yaw = yawRate * Math.min(dt, 0.05)
+      const yaw = yawRate * dtClamped
       _yawQ.setFromAxisAngle(_yawAxis, yaw)
       _quat.multiply(_yawQ)
       rb.setRotation({ x: _quat.x, y: _quat.y, z: _quat.z, w: _quat.w }, true)
 
-      // Re-align horizontal velocity to new forward so we don't skid sideways.
-      _forward.set(0, 0, -1).applyQuaternion(_quat)
-      _forward.y = 0
-      _forward.normalize()
-      rb.setLinvel(
-        {
-          x: _forward.x * speedMs,
-          y: 0,
-          z: _forward.z * speedMs,
-        },
-        true,
-      )
+      if (!wedged) {
+        // Re-align horizontal velocity to new forward so we don't skid sideways.
+        _forward.set(0, 0, -1).applyQuaternion(_quat)
+        _forward.y = 0
+        _forward.normalize()
+        rb.setLinvel(
+          {
+            x: _forward.x * speedMs,
+            y: 0,
+            z: _forward.z * speedMs,
+          },
+          true,
+        )
+      }
     }
 
     // Kill residual angular velocity so Rapier doesn't keep spinning us.
