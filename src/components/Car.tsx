@@ -285,7 +285,53 @@ export function Car({
   /** Prior-frame XZ for wedge displacement check. */
   const prevXZ = useRef({ x: spawn[0], z: spawn[2] })
 
-  // Fresh drop / respawn — zero authored speed with the new RigidBody.
+  /**
+   * Drop-sticky RigidBody mount Y. LEARNING — @react-three/rapier syncs the
+   * `position` prop into rigidBody.setTranslation whenever mutable props change.
+   * Scene used to pass spawnWithHeight with Y = sampleHeight(elev) every elev
+   * swap → object3D jumped back to spawn XZ + new Y → teleport + “bump”.
+   * Freeze Y after Drop / first network-spawn adopt; useFrame pins wantY from
+   * the live heightGrid continuously (no elev teleport).
+   */
+  const mountYRef = useRef<{
+    key: number
+    x: number
+    y: number
+    z: number
+  } | null>(null)
+  if (mountYRef.current?.key !== spawnKey) {
+    mountYRef.current = {
+      key: spawnKey,
+      x: spawn[0],
+      y: spawn[1],
+      z: spawn[2],
+    }
+  } else if (
+    mountYRef.current.x !== spawn[0] ||
+    mountYRef.current.z !== spawn[2]
+  ) {
+    // Ways resolved for this Drop — adopt XZ + Y once. Never chase elev-only Y.
+    mountYRef.current = {
+      key: spawnKey,
+      x: spawn[0],
+      y: spawn[1],
+      z: spawn[2],
+    }
+  }
+
+  /**
+   * Fresh drop / respawn — zero authored speed with the new RigidBody.
+   *
+   * LEARNING — why spawnElevMsl must NOT be in these deps:
+   *   Elev grids land async (flat → Terrarium/Open-Meteo) and may widen as
+   *   tiles stream. spawnElevMsl is the relative-height zero; when it first
+   *   locks (or the HeightGrid identity swaps) a dep on it re-fires this
+   *   effect and zeros signedMph mid-drive → speed drops to 0. Same trap if
+   *   `spawn` (array identity / Y from spawnWithHeight) is listed: Scene
+   *   rebuilds that tuple on every elev apply. Reset on spawnKey only (Drop
+   *   nonce). Elev swaps update carPose.elevMsl below / in useFrame — never
+   *   touch speed, steer, or odometer.
+   */
   useEffect(() => {
     signedMph.current = 0
     steerAngle.current = 0
@@ -298,7 +344,13 @@ export function Car({
     carPose.elevMsl = heightGrid.spawnElevMsl
     carPose.offRoad = false
     odometer.current = { x: spawn[0], z: spawn[2], acc: 0, t: 0, last: 0 }
-  }, [spawnKey, spawn, heightGrid.spawnElevMsl])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Drop nonce only
+  }, [spawnKey])
+
+  // Elev grid swap: HUD MSL zero only — keep authored speed / steer / odo.
+  useEffect(() => {
+    carPose.elevMsl = heightGrid.spawnElevMsl
+  }, [heightGrid.spawnElevMsl])
 
   useFrame((_state, dt) => {
     const rb = body.current
@@ -513,16 +565,15 @@ export function Car({
     carPose.ready = true
   })
 
-  // Spawn Y also comes from the height grid so we don't drop through a hill.
-  const spawnY =
-    sampleHeight(heightGrid, spawn[0], spawn[2]) + CAR_CLEARANCE_M
+  // Mount Y is Drop-sticky (mountYRef); live terrain follow is useFrame wantY.
+  const mountY = mountYRef.current?.y ?? spawn[1]
 
   return (
     <RigidBody
       key={spawnKey}
       ref={body}
       colliders="cuboid"
-      position={[spawn[0], spawnY, spawn[2]]}
+      position={[spawn[0], mountY, spawn[2]]}
       rotation={[0, spawnYaw, 0]}
       friction={1.4}
       // Drive axis is kinematic from the controller; keep damping low so

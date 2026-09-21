@@ -395,11 +395,46 @@ export function Scene({
     [routePath, heightGrid],
   )
 
-  const spawnWithHeight: [number, number, number] = [
-    spawn[0],
-    sampleHeight(heightGrid, spawn[0], spawn[2]) + CAR_CLEARANCE_M,
-    spawn[2],
-  ]
+  /**
+   * Drop-sticky spawn pose for Car mount + FollowCam intro snap.
+   * LEARNING — do NOT recompute Y from heightGrid on every elev apply.
+   * Car RigidBody position prop is synced by rapier into setTranslation; a
+   * live elev Y here teleports the body back to spawn XZ (feels like a bump
+   * + FollowCam “intro wiggle” when player-car blips). Car pins Y each frame
+   * from the live grid; routeVersion/spawnKey stay dropNonce only.
+   */
+  const spawnPoseRef = useRef<{
+    version: number
+    pose: [number, number, number]
+  } | null>(null)
+  if (spawnPoseRef.current?.version !== routeVersion) {
+    spawnPoseRef.current = {
+      version: routeVersion,
+      pose: [
+        spawn[0],
+        sampleHeight(heightGrid, spawn[0], spawn[2]) + CAR_CLEARANCE_M,
+        spawn[2],
+      ],
+    }
+  } else {
+    // Adopt network XZ/yaw once when ways resolve (still same Drop); never
+    // chase elev Y after the pose was captured for this routeVersion.
+    const prev = spawnPoseRef.current.pose
+    if (
+      (prev[0] !== spawn[0] || prev[2] !== spawn[2]) &&
+      spawnRef.current != null
+    ) {
+      spawnPoseRef.current = {
+        version: routeVersion,
+        pose: [
+          spawn[0],
+          sampleHeight(heightGrid, spawn[0], spawn[2]) + CAR_CLEARANCE_M,
+          spawn[2],
+        ],
+      }
+    }
+  }
+  const spawnWithHeight = spawnPoseRef.current.pose
 
   return (
     <Canvas
