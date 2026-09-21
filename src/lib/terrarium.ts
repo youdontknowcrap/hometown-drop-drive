@@ -77,7 +77,7 @@ export type HeightGrid = {
   rows: number
   /**
    * Row-major heights[row * cols + col] in meters RELATIVE to spawnElevMsl
-   * (already scaled by VERTICAL_EXAGGERATION when source === 'terrarium').
+   * (already scaled by VERTICAL_EXAGGERATION when source is terrarium or open-meteo).
    * Flat fallback = all zeros.
    */
   heights: Float32Array
@@ -86,7 +86,7 @@ export type HeightGrid = {
   /** Min/max relative height — useful for wall height and HUD. */
   minRel: number
   maxRel: number
-  source: 'terrarium' | 'flat'
+  source: 'terrarium' | 'open-meteo' | 'flat'
   message: string
 }
 

@@ -4,8 +4,10 @@ import react from '@vitejs/plugin-react'
 /**
  * Dev proxy avoids browser CORS when talking to public OSM services
  * and AWS Terrarium elevation tiles (S3 sends no Access-Control-* headers).
- * Production builds fall back to the demo Ridgecrest polyline / flat ground
- * if the APIs are unreachable (see src/lib/routing.ts, src/lib/terrarium.ts).
+ * Open-Meteo already sends CORS *, but we proxy it too so one origin serves
+ * elev + weather in dev (and as a belt-and-suspenders fallback).
+ * Production builds fall back to demo streets / Open-Meteo direct / quiet flat
+ * if APIs are unreachable (see elevation.ts, weather.ts, osmStreets.ts).
  */
 export default defineConfig({
   plugins: [react()],
@@ -40,6 +42,14 @@ export default defineConfig({
         target: 'https://s3.amazonaws.com/elevation-tiles-prod',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/terrarium/, '/terrarium'),
+      },
+      // Open-Meteo — elevation grid + forecast weather (free, no key).
+      // Browser → /api/open-meteo/v1/elevation?latitude=…&longitude=…
+      // Proxy  → https://api.open-meteo.com/v1/elevation?…
+      '/api/open-meteo': {
+        target: 'https://api.open-meteo.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/open-meteo/, ''),
       },
     },
   },

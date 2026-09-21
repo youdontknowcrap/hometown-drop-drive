@@ -1,5 +1,7 @@
-import type { FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import type { StreetWorld } from '../lib/osmStreets'
+import { WEATHER_PRESETS, type WeatherPreset } from '../lib/weather'
+import { PAINT_PRESETS } from './Car'
 
 export type GpsStatus =
   | 'idle'
@@ -8,6 +10,9 @@ export type GpsStatus =
   | 'rerouting'
   | 'cleared'
   | 'error'
+
+/** localStorage key for HUD open/closed — survives refresh. */
+const HUD_OPEN_KEY = 'hdd-hud-open'
 
 type HudProps = {
   dropAddress: string
@@ -19,8 +24,16 @@ type HudProps = {
   gpsMessage: string
   hasDestination: boolean
   world: StreetWorld
-  /** Terrarium vs flat status from Scene. */
+  /** Terrarium / Open-Meteo / flat status from Scene. */
   terrainMessage?: string
+  /** Building load status. */
+  buildingsMessage?: string
+  /** Live or preset weather summary. */
+  weatherSummary?: string
+  weatherPreset: WeatherPreset
+  onWeatherPreset: (p: WeatherPreset) => void
+  paintHex: string
+  onPaintHex: (hex: string) => void
   camDistance: number
   camHeight: number
   onDropChange: (v: string) => void
@@ -57,6 +70,25 @@ function gpsStatusLine(
   }
 }
 
+function readHudOpen(): boolean {
+  try {
+    const v = localStorage.getItem(HUD_OPEN_KEY)
+    // Default open so first-time Joey still sees Drop/GPS.
+    if (v == null) return true
+    return v === '1' || v === 'true'
+  } catch {
+    return true
+  }
+}
+
+function writeHudOpen(open: boolean) {
+  try {
+    localStorage.setItem(HUD_OPEN_KEY, open ? '1' : '0')
+  } catch {
+    /* private mode / blocked storage — ignore */
+  }
+}
+
 export function Hud({
   dropAddress,
   destAddress,
@@ -68,6 +100,12 @@ export function Hud({
   hasDestination,
   world,
   terrainMessage,
+  buildingsMessage,
+  weatherSummary,
+  weatherPreset,
+  onWeatherPreset,
+  paintHex,
+  onPaintHex,
   camDistance,
   camHeight,
   onDropChange,
@@ -79,6 +117,33 @@ export function Hud({
   onSetDestination,
   onClearDestination,
 }: HudProps) {
+  const [open, setOpen] = useState(readHudOpen)
+
+  // Persist open/closed so a refresh keeps Joey’s preference.
+  useEffect(() => {
+    writeHudOpen(open)
+  }, [open])
+
+  /**
+   * Keyboard shortcut: H or `[` toggles the left control frame.
+   * Skip when focus is in an input/textarea so typing “H” in an address
+   * doesn’t collapse the panel mid-sentence (teaching: always gate global
+   * shortcuts on activeElement tag).
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      const tag = (e.target as HTMLElement | null)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.key === 'h' || e.key === 'H' || e.key === '[') {
+        e.preventDefault()
+        setOpen((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   const submitDrop = (e: FormEvent) => {
     e.preventDefault()
     onDrop()
@@ -89,6 +154,26 @@ export function Hud({
     onSetDestination()
   }
 
+  // Collapsed: thin chevron tab only — max driving view.
+  if (!open) {
+    return (
+      <div className="hud hud-collapsed">
+        <button
+          type="button"
+          className="hud-tab"
+          aria-label="Show controls"
+          title="Show controls (H or [)"
+          onClick={() => setOpen(true)}
+        >
+          <span className="hud-tab-chevron" aria-hidden>
+            ›
+          </span>
+          <span className="hud-tab-label">Controls</span>
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="hud">
       <header className="hud-header">
@@ -97,6 +182,21 @@ export function Hud({
       </header>
 
       <div className="hud-stack">
+        <div className="hud-collapse-row">
+          <button
+            type="button"
+            className="hud-collapse-btn"
+            aria-label="Hide controls"
+            title="Hide controls (H or [)"
+            onClick={() => setOpen(false)}
+          >
+            ‹ Hide
+          </button>
+          <span className="hud-collapse-hint">
+            Hotkey <kbd>H</kbd> / <kbd>[</kbd>
+          </span>
+        </div>
+
         <form className="hud-panel" onSubmit={submitDrop}>
           <label>
             <span>Drop at</span>
@@ -138,6 +238,34 @@ export function Hud({
             />
           </label>
 
+          <label>
+            <span>Weather</span>
+            <select
+              value={weatherPreset}
+              onChange={(e) => onWeatherPreset(e.target.value as WeatherPreset)}
+            >
+              {WEATHER_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <span>Paint</span>
+            <select
+              value={paintHex}
+              onChange={(e) => onPaintHex(e.target.value)}
+            >
+              {PAINT_PRESETS.map((p) => (
+                <option key={p.id} value={p.hex}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
           <p
             className={
               world.source === 'osm' && world.wayCount > 0
@@ -156,6 +284,16 @@ export function Hud({
           {terrainMessage ? (
             <p className="hud-status" role="status">
               {terrainMessage}
+            </p>
+          ) : null}
+          {buildingsMessage ? (
+            <p className="hud-status" role="status">
+              {buildingsMessage}
+            </p>
+          ) : null}
+          {weatherSummary ? (
+            <p className="hud-status" role="status">
+              Weather: {weatherSummary}
             </p>
           ) : null}
         </form>
@@ -216,7 +354,7 @@ export function Hud({
             <kbd>D</kbd> drive · pad: LT gas, RT brake, LB reverse (click the
             world or press <kbd>Esc</kbd> after typing). Set a destination
             anytime. Drive off the blue line and GPS will reroute. Clear = free
-            drive.
+            drive. Hide this panel with <kbd>H</kbd> / <kbd>[</kbd>.
           </p>
         </form>
       </div>

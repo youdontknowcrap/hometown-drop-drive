@@ -8,17 +8,22 @@ import { Road } from './Road'
 import { RoadContainment } from './RoadContainment'
 import { RouteLine } from './RouteLine'
 import { FollowCam } from './FollowCam'
+import { Buildings } from './Buildings'
+import { Rain } from './Rain'
 import { releaseDriveFocus, type DriveKeys } from '../hooks/useKeyboard'
 import { polylineToLocal, type LatLng } from '../lib/geo'
 import { nearestOnNetwork, networkBounds } from '../lib/roadMesh'
 import type { StreetWay } from '../lib/osmStreets'
+import type { BuildingBox } from '../lib/osmBuildings'
 import {
-  fetchHeightGrid,
   flatHeightGrid,
   sampleHeight,
   waysBounds,
   type HeightGrid,
 } from '../lib/terrarium'
+import { fetchElevationGrid } from '../lib/elevation'
+import { sunAt, sunLightPosition } from '../lib/sun'
+import type { WeatherLook } from '../lib/weather'
 
 type SceneProps = {
   keys: MutableRefObject<DriveKeys>
@@ -33,8 +38,14 @@ type SceneProps = {
   routeVersion: number
   camDistance: number
   camHeight: number
-  /** Optional HUD hook so Joey can see Terrarium vs flat. */
+  /** Optional HUD hook so Joey can see Terrarium / Open-Meteo / flat. */
   onTerrainMessage?: (msg: string) => void
+  /** OSM building AABB boxes (may be empty). */
+  buildings?: BuildingBox[]
+  /** Resolved weather look (Auto or manual preset). */
+  weather: WeatherLook
+  /** Body paint hex for Kenney sports sedan. */
+  paintHex?: string
 }
 
 /**
@@ -42,8 +53,8 @@ type SceneProps = {
  * ~200 ft corridor wall (RoadContainment) — not curb-hugging Autopia rails.
  * Blue RouteLine is GPS only (set/clear destination in the HUD).
  *
- * Terrain: Terrarium/SRTM tiles displace the ground under the street bbox;
- * car Y and road ribbons sample the same grid (relative to spawn elev).
+ * Terrain: Terrarium first, Open-Meteo elev fallback, quiet flat last.
+ * Sky/sun track Drop lat/lng + local clock; weather drives fog/rain/light.
  */
 export function Scene({
   keys,
@@ -56,6 +67,9 @@ export function Scene({
   camDistance,
   camHeight,
   onTerrainMessage,
+  buildings = [],
+  weather,
+  paintHex,
 }: SceneProps) {
   const localStreets = useMemo(
     () =>
@@ -79,19 +93,34 @@ export function Scene({
     [localWays],
   )
 
-  // Start flat so the first frame is playable; swap in Terrarium when ready.
+  // Start flat so the first frame is playable; swap in hills when ready.
   const [heightGrid, setHeightGrid] = useState<HeightGrid>(() =>
     flatHeightGrid(bounds.centerX, bounds.centerZ, bounds.size, 'Loading elevation…'),
   )
 
+  // Recompute sun every minute (and when Drop origin changes).
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 60_000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  const sun = useMemo(() => sunAt(origin, new Date(nowTick)), [origin, nowTick])
+  const sunPos = useMemo(
+    () => sunLightPosition(sun.direction, 200),
+    [sun.direction],
+  )
+
+  // Daylight × weather sun scale — dusk dims even on a Clear preset.
+  const sunIntensity = weather.sunScale * (0.25 + 0.75 * sun.daylight)
+  const ambientIntensity = weather.ambientScale * (0.35 + 0.65 * sun.daylight)
+
   useEffect(() => {
     let cancelled = false
     const bb = waysBounds(localWays)
-    // Tell the HUD we're fetching — don't setHeightGrid here (avoids a sync
-    // render loop warning). The previous grid stays until tiles arrive.
-    onTerrainMessage?.('Loading Terrarium/SRTM…')
+    onTerrainMessage?.('Loading elevation (Terrarium → Open-Meteo)…')
 
-    void fetchHeightGrid({
+    void fetchElevationGrid({
       origin,
       minX: bb.minX,
       maxX: bb.maxX,
@@ -145,15 +174,18 @@ export function Scene({
         gl.domElement.style.outline = 'none'
       }}
     >
-      <color attach="background" args={['#87ceeb']} />
-      <fog attach="fog" args={['#cfe8f5', 220, 640]} />
+      <color attach="background" args={[weather.skyBackground]} />
+      <fog
+        attach="fog"
+        args={[weather.fogColor, weather.fogNear, weather.fogFar]}
+      />
 
       <PerspectiveCamera makeDefault position={[0, 12, 22]} fov={55} />
-      <ambientLight intensity={0.55} />
+      <ambientLight intensity={ambientIntensity} />
       <directionalLight
         castShadow
-        position={[40, 60, 20]}
-        intensity={1.25}
+        position={sunPos}
+        intensity={sunIntensity}
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
         shadow-camera-far={500}
@@ -162,7 +194,15 @@ export function Scene({
         shadow-camera-top={160}
         shadow-camera-bottom={-160}
       />
-      <Sky sunPosition={[40, 60, 20]} turbidity={4} rayleigh={1.2} />
+      {/*
+        Sky sunPosition follows the same vector as the directional light.
+        turbidity / rayleigh come from weather (clear → storm).
+      */}
+      <Sky
+        sunPosition={sunPos}
+        turbidity={weather.turbidity}
+        rayleigh={weather.rayleigh}
+      />
 
       <Suspense fallback={null}>
         <Physics gravity={[0, -9.81, 0]} interpolate>
@@ -175,15 +215,22 @@ export function Scene({
             spawnYaw={yaw}
             spawnKey={routeVersion}
             heightGrid={heightGrid}
+            paintHex={paintHex}
           />
           <RoadContainment
             ways={localWays}
             version={routeVersion}
             reliefM={Math.max(0, heightGrid.maxRel - heightGrid.minRel)}
           />
+          <Buildings
+            boxes={buildings}
+            heightGrid={heightGrid}
+            version={routeVersion}
+          />
         </Physics>
         <Road streets={localStreets} heightGrid={heightGrid} />
         <RouteLine points={drapedRoute} visible={showRoute} />
+        <Rain density={weather.rain ? weather.rainDensity : 0} />
       </Suspense>
 
       <FollowCam

@@ -9,6 +9,14 @@ import { carPose } from './lib/carPose'
 import { distanceToPath } from './lib/guidance'
 import { fetchStreetWorld, getDemoWorld, type StreetWorld } from './lib/osmStreets'
 import { routeBetween, routeToAddress, type NavRoute } from './lib/routing'
+import { fetchBuildings, type BuildingBox } from './lib/osmBuildings'
+import {
+  fetchLocalWeather,
+  resolveWeatherLook,
+  type WeatherLook,
+  type WeatherPreset,
+} from './lib/weather'
+import { DEFAULT_PAINT } from './components/Car'
 
 const DEFAULT_DROP = '235 N China Lake Blvd, Ridgecrest, CA'
 const DEFAULT_DEST = 'Eastern Sierra Blvd, Ridgecrest, CA'
@@ -39,6 +47,11 @@ export default function App() {
   const [gpsMessage, setGpsMessage] = useState('')
   const [gpsBusy, setGpsBusy] = useState(false)
   const [terrainMessage, setTerrainMessage] = useState('Elevation: …')
+  const [buildings, setBuildings] = useState<BuildingBox[]>([])
+  const [buildingsMessage, setBuildingsMessage] = useState('Buildings: …')
+  const [weatherPreset, setWeatherPreset] = useState<WeatherPreset>('auto')
+  const [liveWeather, setLiveWeather] = useState<WeatherLook | null>(null)
+  const [paintHex, setPaintHex] = useState(DEFAULT_PAINT)
 
   const booted = useRef(false)
   /** Destination lat/lng kept for reroutes even while polyline updates. */
@@ -54,6 +67,11 @@ export default function App() {
     originRef.current = world.origin
   }, [world.origin])
 
+  const weather = useMemo(
+    () => resolveWeatherLook(weatherPreset, liveWeather),
+    [weatherPreset, liveWeather],
+  )
+
   const onDrop = useCallback(async () => {
     setBusy(true)
     try {
@@ -68,6 +86,18 @@ export default function App() {
       navLocalRef.current = []
       setGpsStatus('idle')
       setGpsMessage('')
+      setBuildings([])
+      setBuildingsMessage('Loading buildings…')
+      setLiveWeather(null)
+
+      // Fire-and-forget scenery + weather for the new Drop (don't block Drop UX).
+      void fetchBuildings(next.origin).then((bw) => {
+        setBuildings(bw.boxes)
+        setBuildingsMessage(bw.message)
+      })
+      void fetchLocalWeather(next.origin).then((w) => {
+        setLiveWeather(w)
+      })
     } finally {
       setBusy(false)
       // Playtest #17: leave the address field so WASD drives immediately.
@@ -80,6 +110,15 @@ export default function App() {
     booted.current = true
     void onDrop()
   }, [onDrop])
+
+  // Refresh live weather every ~10 min while on Auto (cheap Open-Meteo call).
+  useEffect(() => {
+    if (weatherPreset !== 'auto') return
+    const id = window.setInterval(() => {
+      void fetchLocalWeather(originRef.current).then(setLiveWeather)
+    }, 10 * 60_000)
+    return () => window.clearInterval(id)
+  }, [weatherPreset, world.origin])
 
   const applyNav = useCallback((next: NavRoute, status: GpsStatus) => {
     setNav(next)
@@ -214,6 +253,9 @@ export default function App() {
           camDistance={camDistance}
           camHeight={camHeight}
           onTerrainMessage={setTerrainMessage}
+          buildings={buildings}
+          weather={weather}
+          paintHex={paintHex}
         />
       </div>
       <Hud
@@ -227,6 +269,12 @@ export default function App() {
         hasDestination={hasDestination}
         world={world}
         terrainMessage={terrainMessage}
+        buildingsMessage={buildingsMessage}
+        weatherSummary={weather.summary}
+        weatherPreset={weatherPreset}
+        onWeatherPreset={setWeatherPreset}
+        paintHex={paintHex}
+        onPaintHex={setPaintHex}
         camDistance={camDistance}
         camHeight={camHeight}
         onDropChange={setDropAddress}

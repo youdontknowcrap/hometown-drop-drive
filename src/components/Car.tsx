@@ -24,6 +24,30 @@ const _yawQ = new THREE.Quaternion()
 /** How high the RigidBody center sits above sampled ground. */
 const CAR_CLEARANCE_M = 0.55
 
+/**
+ * Kenney Car Kit already ships a sportier GLB (`sedan-sports.glb`) with a
+ * spoiler + lower stance. We used the drab `sedan.glb` before — switch the
+ * default to sports for a teen STEM racer vibe (still CC0, no game rips).
+ *
+ * WHY materials on top of the GLB?
+ *   Kenney packs one atlas (`colormap`). Recoloring in Blender is overkill
+ *   for a teaching toy. Traverse body/spoiler meshes and swap in a punchy
+ *   MeshStandardMaterial (metallic paint). Wheels keep the atlas so rubber
+ *   still reads as rubber. Tiny emissive boxes fake lit headlights/taillights
+ *   because the atlas has no separate light meshes.
+ */
+const SEDAN_SPORTS = '/models/kenney-car/sedan-sports.glb'
+
+/** Default candy — electric blue; HUD paint picker can override. */
+export const DEFAULT_PAINT = '#1e90ff'
+
+export const PAINT_PRESETS: { id: string; label: string; hex: string }[] = [
+  { id: 'blue', label: 'Electric blue', hex: '#1e90ff' },
+  { id: 'red', label: 'Candy red', hex: '#e10600' },
+  { id: 'lime', label: 'Acid lime', hex: '#b8f200' },
+  { id: 'black', label: 'Stealth black', hex: '#1a1a1e' },
+]
+
 type CarProps = {
   keys: MutableRefObject<DriveKeys>
   path: Array<[number, number, number]>
@@ -31,20 +55,11 @@ type CarProps = {
   spawn: [number, number, number]
   spawnYaw: number
   spawnKey: number
-  /** Terrarium (or flat) grid — car Y follows sampleHeight each frame. */
+  /** Terrarium / Open-Meteo / flat grid — car Y follows sampleHeight. */
   heightGrid: HeightGrid
+  /** Body paint hex (from HUD picker or DEFAULT_PAINT). */
+  paintHex?: string
 }
-
-const SEDAN = '/models/kenney-car/sedan.glb'
-const WHEEL = '/models/kenney-car/wheel-default.glb'
-
-/** Kenney sedan, Y-up, +Z nose. Wheels are a separate GLB. Units ≈ meters. */
-const WHEEL_POS: Array<[number, number, number]> = [
-  [0.62, 0.3, 0.88],
-  [-0.62, 0.3, 0.88],
-  [0.62, 0.3, -0.95],
-  [-0.62, 0.3, -0.95],
-]
 
 function shadowClone(src: THREE.Object3D): THREE.Object3D {
   const obj = src.clone(true)
@@ -58,35 +73,118 @@ function shadowClone(src: THREE.Object3D): THREE.Object3D {
   return obj
 }
 
-function KenneySedan() {
-  const sedan = useGLTF(SEDAN)
-  const wheel = useGLTF(WHEEL)
-  const body = useMemo(() => shadowClone(sedan.scene), [sedan.scene])
-  const wheels = useMemo(
-    () => WHEEL_POS.map(() => shadowClone(wheel.scene)),
-    [wheel.scene],
+/**
+ * Punchy paint pass on body + spoiler; leave wheel meshes on the Kenney atlas.
+ * Teaching: mesh.name comes from the GLB nodes (body, spoiler, wheel-*).
+ */
+function applySportsPaint(root: THREE.Object3D, paintHex: string) {
+  const paint = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(paintHex),
+    metalness: 0.72,
+    roughness: 0.28,
+    envMapIntensity: 1.1,
+  })
+  // Dark “glass” strip cue — slightly darker / less metal for windshield band
+  // if Kenney ever splits windows; today body is one mesh so paint wins.
+  const darkTrim = new THREE.MeshStandardMaterial({
+    color: new THREE.Color('#1c1c22'),
+    metalness: 0.85,
+    roughness: 0.35,
+  })
+
+  root.traverse((n) => {
+    const mesh = n as THREE.Mesh
+    if (!mesh.isMesh) return
+    const name = (mesh.name || '').toLowerCase()
+    // Sports GLB wheels stay on colormap (tread + rim read correctly).
+    if (name.includes('wheel')) return
+    if (name.includes('spoiler')) {
+      // Spoiler: same paint family, a touch more metal (chrome-ish wing).
+      mesh.material = paint.clone()
+      ;(mesh.material as THREE.MeshStandardMaterial).metalness = 0.88
+      ;(mesh.material as THREE.MeshStandardMaterial).roughness = 0.22
+      return
+    }
+    if (name.includes('body') || name === '') {
+      mesh.material = paint
+      return
+    }
+    // Anything else (trim bits) → dark metal.
+    mesh.material = darkTrim
+  })
+}
+
+/** Emissive light boxes — Kenney atlas has no separate lamp meshes. */
+function LightBoxes() {
+  return (
+    <group>
+      {/* Headlights (nose is +Z in Kenney space; parent flips 180°). */}
+      <mesh position={[0.45, 0.55, 1.05]} castShadow={false}>
+        <boxGeometry args={[0.28, 0.12, 0.06]} />
+        <meshStandardMaterial
+          color="#fff5d6"
+          emissive="#ffe9a8"
+          emissiveIntensity={2.2}
+          toneMapped={false}
+        />
+      </mesh>
+      <mesh position={[-0.45, 0.55, 1.05]} castShadow={false}>
+        <boxGeometry args={[0.28, 0.12, 0.06]} />
+        <meshStandardMaterial
+          color="#fff5d6"
+          emissive="#ffe9a8"
+          emissiveIntensity={2.2}
+          toneMapped={false}
+        />
+      </mesh>
+      {/* Taillights */}
+      <mesh position={[0.42, 0.55, -1.15]} castShadow={false}>
+        <boxGeometry args={[0.32, 0.1, 0.05]} />
+        <meshStandardMaterial
+          color="#ff2040"
+          emissive="#ff1028"
+          emissiveIntensity={1.6}
+          toneMapped={false}
+        />
+      </mesh>
+      <mesh position={[-0.42, 0.55, -1.15]} castShadow={false}>
+        <boxGeometry args={[0.32, 0.1, 0.05]} />
+        <meshStandardMaterial
+          color="#ff2040"
+          emissive="#ff1028"
+          emissiveIntensity={1.6}
+          toneMapped={false}
+        />
+      </mesh>
+    </group>
   )
+}
+
+function KenneySportsSedan({ paintHex }: { paintHex: string }) {
+  const gltf = useGLTF(SEDAN_SPORTS)
+  const body = useMemo(() => {
+    const clone = shadowClone(gltf.scene)
+    applySportsPaint(clone, paintHex)
+    return clone
+  }, [gltf.scene, paintHex])
 
   return (
     // Kenney +Z is the nose; our arcade forward is -Z.
     <group rotation={[0, Math.PI, 0]}>
       <primitive object={body} />
-      {wheels.map((w, i) => (
-        <primitive key={i} object={w} position={WHEEL_POS[i]} />
-      ))}
+      <LightBoxes />
     </group>
   )
 }
 
-useGLTF.preload(SEDAN)
-useGLTF.preload(WHEEL)
+useGLTF.preload(SEDAN_SPORTS)
 
 /**
- * Kenney CC0 sedan with arcade WASD + gamepad driving.
+ * Kenney CC0 sports sedan with arcade WASD + gamepad driving.
  *
  * Longitudinal: signed-speed along forward (see longitudinal.ts).
  * Horizontal linvel is authored each frame; vertical (y) follows the
- * Terrarium height sample so hills work without a fragile heightfield CCD.
+ * height sample so hills work without a fragile heightfield CCD.
  *
  * --- Steering = wheel angle (bicycle / single-track model) ---
  *   Stick/keys → normalized δ̂ ∈ [−1, 1]  (deadzone → 0 → goes straight)
@@ -106,6 +204,7 @@ export function Car({
   spawnYaw,
   spawnKey,
   heightGrid,
+  paintHex = DEFAULT_PAINT,
 }: CarProps) {
   const body = useRef<RapierRigidBody>(null)
   /** Authoritative signed speed (mph) along forward. Positive = nose direction. */
@@ -158,7 +257,7 @@ export function Car({
     const speedMs = signedMph.current * MPH_TO_MS
     const t = rb.translation()
 
-    // --- Terrain follow: pin Y to Terrarium sample (relative to spawn elev)
+    // --- Terrain follow: pin Y to height sample (relative to spawn elev)
     const groundY = sampleHeight(heightGrid, t.x, t.z)
     const wantY = groundY + CAR_CLEARANCE_M
 
@@ -262,7 +361,7 @@ export function Car({
       gravityScale={0}
     >
       <group name="player-car">
-        <KenneySedan />
+        <KenneySportsSedan paintHex={paintHex} />
       </group>
     </RigidBody>
   )

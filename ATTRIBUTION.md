@@ -14,7 +14,8 @@ Files in `public/textures/` are 1K JPG (web toy size).
 ## Kenney Car Kit (CC0)
 
 - https://kenney.nl/assets/car-kit
-- Sedan + default wheels in `public/models/kenney-car/` (sedan-sports.glb is a second skin, unused in the picker yet).
+- Default driveable car: `sedan-sports.glb` (spoiler + stance) with a runtime metallic paint pass + emissive lamps.
+- `sedan.glb` + `wheel-default.glb` kept in-tree as CC0 spares.
 - License: `public/models/kenney-car/LICENSE.txt`
 
 ## Kenney Road Textures (CC0)
@@ -37,3 +38,12 @@ stand-in for DTED-class height data.
 - Registry: https://registry.opendata.aws/terrain-tiles/
 - Format: https://github.com/tilezen/joerd/blob/master/docs/formats.md
 - Decode: `(R * 256 + G + B / 256) - 32768` → meters MSL
+
+
+## Open-Meteo (elevation + weather)
+
+Free, no-key APIs used for:
+- Elevation grid fallback when Terrarium tiles fail: `/v1/elevation`
+- Local current weather + sunrise/sunset: `/v1/forecast`
+
+https://open-meteo.com/

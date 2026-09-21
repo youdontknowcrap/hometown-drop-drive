@@ -2,7 +2,7 @@
 
 Kid-friendly **browser driving toy**: type a start and stop address, get an OpenStreetMap driving path, and drive with WASD or a USB game controller.
 
-Drop at an address. Load **every OSM street in a 3 km radius** (including backroads / tracks). Drive them. Leave the asphalt a bit, then hit a **hard stop ~200 ft** off the road network (not curb-hugging Autopia rails). GPS dash + camera sliders. Hills from free **Terrarium/SRTM** elevation tiles.
+Drop at an address. Load **every OSM street in a 3 km radius** (including backroads / tracks). Drive them. Leave the asphalt a bit, then hit a **hard stop ~200 ft** off the road network (not curb-hugging Autopia rails). GPS dash + camera sliders. Hills from **Terrarium/SRTM** with **Open-Meteo elevation** fallback; OSM building boxes; local weather + sun.
 
 Web-first prototype (no Unity). Live routing + elevation need `npm run dev` (Vite proxy). Offline / CORS failure falls back to a Ridgecrest demo loop and flat ground.
 
@@ -14,7 +14,7 @@ https://github.com/youdontknowcrap/hometown-drop-drive/issues
 
 Commit messages close or reference those issues (`Fixes #1`). That is the paper trail.
 
-Buildings are parked on purpose (issue #5) until streets read as streets.
+Buildings (#5) are simple extruded OSM boxes along the Drop. HUD collapses (`H` / `[`) so the drive view stays big.
 
 ## Quick start
 
@@ -109,6 +109,23 @@ We displace the ground under the loaded street bbox, drape asphalt + GPS line, a
 This works **US-wide** for a later cross-country pass. **Road streaming** (issue #11) is separate — elevation already follows lat/lng; OSM streets are still a ~3 km Overpass box today.
 
 See `src/lib/terrarium.ts`, `src/components/Ground.tsx`, Vite `/api/terrarium` proxy.
+
+### Open-Meteo elevation fallback
+
+If Terrarium tiles fail (no proxy / CORS / decode), we sample a ≤100-point lat/lng grid from Open-Meteo elevation, bilinear-upsample to the same height grid, still **relative-to-spawn** with ~2× exaggeration. Both fail → quiet “Flat ground” (no scary sample errors). HUD labels the path: Terrarium / Open-Meteo elev / Flat.
+
+See `src/lib/elevation.ts`, `src/lib/openMeteoElev.ts`, Vite `/api/open-meteo`.
+
+### Sports car skin (Kenney CC0)
+
+Default model is `sedan-sports.glb` (spoiler). Body/spoiler get a metallic `MeshStandardMaterial` paint pass; wheels keep the Kenney atlas; emissive boxes fake lamps. HUD paint picker swaps the hex.
+
+See `src/components/Car.tsx`.
+
+### Collapsible HUD
+
+Left control frame hides to a thin tab (`H` or `[`, persisted in `localStorage`) so teens get a full-width drive view. Drop/GPS/weather stay usable when expanded.
+
 
 ## Why streets were missing (and what changed)
 
