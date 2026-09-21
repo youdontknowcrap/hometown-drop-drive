@@ -49,18 +49,29 @@ function writeMapMode(mode: MapMode) {
  *
  * Track-up (default, classic dash GPS):
  *   - Car chevron stays fixed in the center, tip pointing *up* on the canvas.
- *   - Streets / route translate with the car and rotate by **−yaw** so the
+ *   - Streets / route translate with the car and rotate by **+yaw** so the
  *     direction the car is facing is always toward the top of the dial.
  *   - Feel it: turn left → the map swings *right* under the fixed chevron
  *     (same as a real car GPS).
  *
  * North-up:
- *   - Map stays north-aligned (world +X → right, +Z → down on canvas).
+ *   - Map stays north-aligned (world +X → right = east, +Z → down = south).
  *   - Car icon rotates with yaw; map still recenters on the car.
  *
- * Yaw convention (from Car / Three.js): yaw = 0 faces world −Z; positive yaw
- * is a left turn. Canvas +Y is down, so −Z maps to “up” on the dial — which
- * is why rotate(−yaw) puts forward at the top in track-up.
+ * Yaw convention (from Car / Three.js): yaw = 0 faces world −Z (north);
+ * positive yaw is a left turn → forward = (−sin θ, −cos θ) in XZ.
+ * Canvas +Y is down, so world −Z maps to “up” on the dial.
+ *
+ * LEARNING — why track-up uses +yaw (not −yaw), and why we do *not* negate
+ * canvas X vs world +X:
+ *   A mistaken R_−θ made the map’s left/right flip relative to the car at
+ *   non-zero headings (Joey’s “E/W mirrored” report) while N/S (Z → canvas Y)
+ *   still looked fine when facing north. The fix is the rotation sign, not
+ *   `half - dx`. Negating screen X would put east on the *left* in north-up
+ *   and re-mirror passenger/driver sides in track-up.
+ *   Kenney’s mesh noses +Z, but Car wraps it with a 180° yaw so arcade
+ *   forward stays −Z; carPose.yaw already matches that, so GPS needs no
+ *   extra model-forward flip.
  */
 export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -86,7 +97,8 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
 
     /**
      * World (x, z) → canvas pixels, with the car at the dial center.
-     * In track-up we also rotate by −yaw so forward = up.
+     * North-up: +X (east) → canvas right, +Z (south) → canvas down.
+     * Track-up: also rotate by +yaw so car forward lands at canvas up.
      */
     const worldToPx = (
       x: number,
@@ -100,17 +112,20 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
       let dx = x - cx
       let dz = z - cz
       if (trackUp) {
-        // Rotate the offset by −yaw in the XZ plane.
-        // R_−θ (dx, dz) = (dx cosθ + dz sinθ, −dx sinθ + dz cosθ)
-        // with θ = yaw. After this, the car’s forward (−sinθ, −cosθ) lands on (0, −1)
-        // in canvas space = straight up on the dial.
+        // Rotate the offset by +yaw in the XZ plane (NOT −yaw).
+        // R_+θ (dx, dz) = (dx cosθ − dz sinθ, dx sinθ + dz cosθ)
+        // Car forward (−sinθ, −cosθ) → (0, −1) = straight up on the dial.
+        // Car right (cosθ, −sinθ) → (+1, 0) = canvas right — so turn left
+        // still makes the map swing right under the fixed chevron.
         const c = Math.cos(yaw)
         const s = Math.sin(yaw)
-        const rx = dx * c + dz * s
-        const rz = -dx * s + dz * c
+        const rx = dx * c - dz * s
+        const rz = dx * s + dz * c
         dx = rx
         dz = rz
       }
+      // Keep world +X → screen +X. Flipping this (`half - dx`) would east=left
+      // in north-up and mirror driver/passenger sides in track-up again.
       return {
         x: half + dx / mPerPx,
         y: half + dz / mPerPx,
@@ -197,8 +212,9 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
       // Teaching: in track-up the whole map (and this N) spins; in north-up N stays at top.
       {
         // World north is −Z. On a north-up canvas that is straight up.
-        // In track-up, worldToPx already rotated by −yaw, so a point due north
-        // of the car lands at (sin(yaw), −cos(yaw)) on the dial — put N there.
+        // After R_+yaw, a point due north of the car lands at (sin(yaw), −cos(yaw))
+        // on the dial — same formula the badge uses, so N stays glued to map-north
+        // (the old R_−yaw path put streets on the opposite X from this badge).
         const nx = trackUp ? Math.sin(yaw) : 0
         const ny = trackUp ? -Math.cos(yaw) : -1
         const rim = half - 14
