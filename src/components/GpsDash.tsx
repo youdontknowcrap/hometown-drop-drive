@@ -123,10 +123,8 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
     if (!ctx) return
 
     const half = SIZE / 2
-    // meters → pixels: VIEW_METERS spans the full dial width.
-    // Zoom: meters across the dial. Zoomed-out shows more of the *loaded*
-    // map only (hard GPS rule — never strokes prefetch tiles).
-    const mPerPx = viewMetersRef.current / SIZE
+    // Zoom reads viewMetersRef INSIDE draw so +/− only changes view span —
+    // never restarts this effect / never touches Scene (Joey lock).
 
     /**
      * World (x, z) → canvas pixels, with the car at the dial center.
@@ -140,6 +138,7 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
       cz: number,
       yaw: number,
       trackUp: boolean,
+      mPerPx: number,
     ) => {
       // Relative to car in world XZ (Z “south” on a north-up canvas).
       let dx = x - cx
@@ -171,13 +170,14 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
       cz: number,
       yaw: number,
       trackUp: boolean,
+      mPerPx: number,
     ) => {
       if (pts.length < 2) return
       ctx.beginPath()
-      const a = worldToPx(pts[0][0], pts[0][2], cx, cz, yaw, trackUp)
+      const a = worldToPx(pts[0][0], pts[0][2], cx, cz, yaw, trackUp, mPerPx)
       ctx.moveTo(a.x, a.y)
       for (let i = 1; i < pts.length; i++) {
-        const p = worldToPx(pts[i][0], pts[i][2], cx, cz, yaw, trackUp)
+        const p = worldToPx(pts[i][0], pts[i][2], cx, cz, yaw, trackUp, mPerPx)
         ctx.lineTo(p.x, p.y)
       }
       ctx.stroke()
@@ -189,6 +189,8 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
       const cx = carPose.ready ? carPose.x : 0
       const cz = carPose.ready ? carPose.z : 0
       const yaw = carPose.ready ? carPose.yaw : 0
+      // Zoom = view span only (ref). Hard GPS rule: still only *loaded* ways.
+      const mPerPx = viewMetersRef.current / SIZE
 
       ctx.fillStyle = '#0b1c28'
       ctx.fillRect(0, 0, SIZE, SIZE)
@@ -202,13 +204,13 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
       ctx.strokeStyle = '#5c7a8a'
       ctx.lineWidth = 1.2
       for (const way of ways) {
-        strokePoly(way, cx, cz, yaw, trackUp)
+        strokePoly(way, cx, cz, yaw, trackUp, mPerPx)
       }
 
       if (route.length >= 2) {
         ctx.strokeStyle = '#42a5f5'
         ctx.lineWidth = 2.4
-        strokePoly(route, cx, cz, yaw, trackUp)
+        strokePoly(route, cx, cz, yaw, trackUp, mPerPx)
         const end = worldToPx(
           route[route.length - 1][0],
           route[route.length - 1][2],
@@ -216,6 +218,7 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
           cz,
           yaw,
           trackUp,
+          mPerPx,
         )
         ctx.fillStyle = '#ef5350'
         ctx.beginPath()
@@ -281,7 +284,7 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
     }
     raf = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(raf)
-  }, [origin, ways, route, viewMeters])
+  }, [origin, ways, route])
 
   const toggleMode = () => {
     setMapMode((m) => (m === 'track' ? 'north' : 'track'))

@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo, useState, type MutableRefObject } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Sky, PerspectiveCamera } from '@react-three/drei'
 import { Physics } from '@react-three/rapier'
@@ -14,7 +14,7 @@ import { Buildings } from './Buildings'
 import { Rain } from './Rain'
 import { releaseDriveFocus, type DriveKeys } from '../hooks/useKeyboard'
 import { polylineToLocal, type LatLng } from '../lib/geo'
-import { nearestOnNetwork, networkBounds } from '../lib/roadMesh'
+import { nearestOnNetwork } from '../lib/roadMesh'
 import type { StreetWay } from '../lib/osmStreets'
 import { buildRoadSurfaceWays } from '../lib/roadSurface'
 import {
@@ -28,12 +28,12 @@ import {
 import {
   flatHeightGrid,
   sampleHeight,
-  waysBounds,
   type HeightGrid,
 } from '../lib/terrarium'
 import { fetchElevationGrid, fetchFarElevationGrid } from '../lib/elevation'
 import { sunAt, sunLightPosition } from '../lib/sun'
 import type { WeatherLook } from '../lib/weather'
+import { PREFETCH_RING, TILE_M } from '../lib/streetTiles'
 
 type SceneProps = {
   keys: MutableRefObject<DriveKeys>
@@ -45,6 +45,10 @@ type SceneProps = {
   guidanceOn: boolean
   /** Draw the blue GPS line whenever a destination is set. */
   showRoute: boolean
+  /**
+   * Drop-only remount key (App passes dropNonce). MUST NOT be streamVersion —
+   * tile activate/unload is additive; Car RigidBody + FollowCam stay continuous.
+   */
   routeVersion: number
   camDistance: number
   camHeight: number
@@ -126,23 +130,44 @@ export function Scene({
     [buildings, roadSurfaceWays],
   )
 
-  const bounds = useMemo(() => networkBounds(localWays), [localWays])
-
-  const { spawn, yaw } = useMemo(
-    () => nearestOnNetwork(0, 0, localWays),
-    [localWays],
-  )
+  /**
+   * JOEY LOCK — spawn pose is Drop-sticky. Recomputing nearestOnNetwork whenever
+   * streamed tiles change would move spawn props and (with a bad spawnKey) yank
+   * the car / camera. We only resolve once per routeVersion when ways exist.
+   */
+  const spawnRef = useRef<{
+    version: number
+    spawn: [number, number, number]
+    yaw: number
+  } | null>(null)
+  if (spawnRef.current?.version !== routeVersion) {
+    spawnRef.current = null
+  }
+  if (spawnRef.current == null && localWays.length > 0) {
+    const n = nearestOnNetwork(0, 0, localWays)
+    spawnRef.current = {
+      version: routeVersion,
+      spawn: n.spawn,
+      yaw: n.yaw,
+    }
+  }
+  const spawn: [number, number, number] = spawnRef.current?.spawn ?? [
+    0, 0, 0,
+  ]
+  const yaw = spawnRef.current?.yaw ?? 0
 
   // Start flat so the first frame is playable; swap in hills when ready.
-  const [heightGrid, setHeightGrid] = useState<HeightGrid>(() =>
-    flatHeightGrid(bounds.centerX, bounds.centerZ, bounds.size, 'Loading elevation…'),
-  )
+  // Span matches the Drop elev box (prefetch footprint) — not streamed ways.
+  const [heightGrid, setHeightGrid] = useState<HeightGrid>(() => {
+    const span = TILE_M * (PREFETCH_RING + 1)
+    return flatHeightGrid(0, 0, span * 2, 'Loading elevation…')
+  })
   /** Coarse skyline mesh (~12 km); null until far fetch lands (or permanently if both paths fail). */
   const [farHeightGrid, setFarHeightGrid] = useState<HeightGrid | null>(null)
 
   /**
    * Widened corridors for Ground / FarGround trench dig — cellSize-aware so
-   * coarse desert verts still fall under ribbons (see roadHeights).
+   * coarse grass verts still fall under ribbons (see roadHeights).
    */
   const roadTrenchWays = useMemo(
     () => buildRoadTrenchWays(localStreets, heightGrid.cellSize),
@@ -166,19 +191,26 @@ export function Scene({
   const sunIntensity = weather.sunScale * (0.25 + 0.75 * sun.daylight)
   const ambientIntensity = weather.ambientScale * (0.35 + 0.65 * sun.daylight)
 
+  /**
+   * Elevation once per Drop (routeVersion), covering the prefetch footprint.
+   * LEARNING — do NOT depend on localWays / streamVersion: every tile activate
+   * used to refetch Terrarium + rebuild Ground + remount feel. Streaming streets
+   * stay additive; hills for the ~prefetch box are enough for a drive session.
+   */
   useEffect(() => {
     let cancelled = false
-    const bb = waysBounds(localWays)
+    // ±(PREFETCH_RING+1) tiles from Drop origin — warm elev before soft edge.
+    const span = TILE_M * (PREFETCH_RING + 1)
     onTerrainMessage?.('Loading elevation (Terrarium → Open-Meteo)…')
     onFarTerrainMessage?.('Far terrain: loading…')
     setFarHeightGrid(null)
 
     void fetchElevationGrid({
       origin,
-      minX: bb.minX,
-      maxX: bb.maxX,
-      minZ: bb.minZ,
-      maxZ: bb.maxZ,
+      minX: -span,
+      maxX: span,
+      minZ: -span,
+      maxZ: span,
       spawnX: spawn[0],
       spawnZ: spawn[2],
     }).then(async (grid) => {
@@ -210,7 +242,9 @@ export function Scene({
     return () => {
       cancelled = true
     }
-  }, [origin, localWays, bounds, spawn, onTerrainMessage, onFarTerrainMessage, routeVersion])
+    // spawn is Drop-sticky (see spawnRef); origin + routeVersion define a Drop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Joey lock: no localWays
+  }, [origin.lat, origin.lng, routeVersion, onTerrainMessage, onFarTerrainMessage])
 
   // Drape the blue GPS line onto the same height samples as the asphalt.
   const drapedRoute = useMemo(
@@ -284,6 +318,7 @@ export function Scene({
       <Suspense fallback={null}>
         <Physics gravity={[0, -9.81, 0]} interpolate>
           <Ground heightGrid={heightGrid} roadTrenchWays={roadTrenchWays} />
+          {/* spawnKey = dropNonce only — tile stream must not remount RigidBody */}
           <Car
             keys={keys}
             path={drapedRoute}

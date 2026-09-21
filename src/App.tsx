@@ -81,10 +81,11 @@ export default function App() {
 
   // Mirror streamer world into the existing `world` state so Hud / Scene keep
   // working; ways always come from active tiles only.
+  // JOEY LOCK: streamVersion must NOT remount Car / FollowCam / Scene — only
+  // dropNonce does (via routeVersion below). Streaming = additive mesh/data.
   useEffect(() => {
     if (!stream.streaming && stream.busy) return
     setWorld(stream.world)
-    // streamVersion drives Scene remounts via routeVersion
   }, [stream.world, stream.streamVersion, stream.streaming, stream.busy])
 
   const onDrop = useCallback(async () => {
@@ -264,7 +265,7 @@ export default function App() {
           routePath={routeLocal}
           guidanceOn={guidanceOn && hasDestination}
           showRoute={hasDestination}
-          routeVersion={stream.streamVersion}
+          routeVersion={dropNonce}
           hardContainment={false}
           loadedAabb={stream.loadedAabb}
           camDistance={camDistance}

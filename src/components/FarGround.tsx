@@ -23,10 +23,10 @@ import type { RoadSurfaceWay } from '../lib/roadSurface'
  * lerp toward near sampleHeight so the seam is not a cliff.
  *
  * Road trench: in the blend ring, nearY can still cover edge ribbons. Apply
- * the same corridor dig so FarGround doesn’t flash desert over asphalt there.
+ * the same corridor dig so FarGround doesn’t flash bare dirt over asphalt there.
  */
 
-const DESERT_REPEAT_M = 80
+const GRASS_REPEAT_M = 80
 
 type FarGroundProps = {
   nearGrid: HeightGrid
@@ -83,8 +83,12 @@ export function FarGround({
   farGrid,
   roadTrenchWays = [],
 }: FarGroundProps) {
+  // Same grass family as near Ground — far ring was reading as desert sand.
   const [diff, nor] = useTexture(
-    ['/textures/aerial_sand_diff_1k.jpg', '/textures/aerial_sand_nor_gl_1k.jpg'],
+    [
+      '/textures/aerial_grass_rock_diff_1k.jpg',
+      '/textures/aerial_grass_rock_nor_gl_1k.jpg',
+    ],
     prepMaps,
   )
 
@@ -145,7 +149,7 @@ export function FarGround({
     return { geometry: geo, centerX, centerZ, size }
   }, [nearGrid, farGrid, roadTrenchWays])
 
-  const tiles = Math.max(8, size / DESERT_REPEAT_M)
+  const tiles = Math.max(8, size / GRASS_REPEAT_M)
   diff.repeat.set(tiles, tiles)
   nor.repeat.set(tiles, tiles)
 
@@ -163,7 +167,7 @@ export function FarGround({
         roughness={0.98}
         metalness={0}
         // Slightly cooler / muted so distant ring reads as haze skyline.
-        color="#d9c9a8"
+        color="#b7c99a"
         polygonOffset
         polygonOffsetFactor={2}
         polygonOffsetUnits={2}

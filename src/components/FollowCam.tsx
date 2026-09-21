@@ -4,6 +4,10 @@ import * as THREE from 'three'
 
 type FollowCamProps = {
   targetSpawn: [number, number, number]
+  /**
+   * Drop-only. Streaming tile loads must NOT change this — otherwise the chase
+   * cam snaps back to spawn (Joey lock).
+   */
   routeVersion: number
   distance: number
   height: number

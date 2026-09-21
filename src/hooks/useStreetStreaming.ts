@@ -26,7 +26,12 @@ export type StreetStreamingState = {
   loadingCount: number
   streamMessage: string
   loadedAabb: LoadedAabb | null
-  /** Bumps when the active set changes (remount Road / labels cleanly). */
+  /**
+   * Bumps when the *active tile set* changes (ways added/removed).
+   * LEARNING — NOT a remount key for Car / FollowCam / Scene. App passes
+   * dropNonce as routeVersion for spawn/camera; streamVersion only feeds
+   * additive Road / GPS way lists.
+   */
   streamVersion: number
   streaming: boolean
   tileMath: string
@@ -122,11 +127,17 @@ export function useStreetStreaming(dropAddress: string, dropNonce: number): Stre
           setState({ ...stateFromStreamer(streamer), busy: false })
         })
 
-        // 4 Hz is enough — tiles are ~1 km; we only care about tile crossings.
+        // 4 Hz is enough for 1 km tiles; look-ahead uses yaw + speed so the
+        // next ring activates before soft-clamp meets a continuing road.
         poll = window.setInterval(() => {
           if (cancelled || !streamerRef.current) return
           if (!carPose.ready) return
-          streamerRef.current.updateCar(carPose.x, carPose.z)
+          streamerRef.current.updateCar(
+            carPose.x,
+            carPose.z,
+            carPose.yaw,
+            carPose.speedMph,
+          )
         }, 250)
       })
       .catch((err: unknown) => {

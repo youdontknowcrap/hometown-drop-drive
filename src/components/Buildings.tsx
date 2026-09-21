@@ -46,10 +46,12 @@ export function Buildings({ boxes, heightGrid, version }: BuildingsProps) {
     <RigidBody key={version} type="fixed" colliders={false} position={[0, 0, 0]}>
       {placed.map((b, i) => {
         const y = b.groundY + b.height * 0.5
-        // Soft desert-town palette — houses slightly warmer than warehouses.
-        const hue = b.residential ? 28 + (i % 5) * 3 : 22 + (i % 7) * 4
-        const lightness = b.residential ? 46 + (i % 4) * 3 : 40 + (i % 5) * 4
-        const color = `hsl(${hue}, 18%, ${lightness}%)`
+        // Light tan / warm sand family (Joey playtest) — not dark drab.
+        // Residential + other share the same family; slight H/L variation only.
+        const hue = 36 + (i % 6) * 2 // ~36–46° warm sand
+        const sat = b.residential ? 32 + (i % 4) * 3 : 28 + (i % 5) * 2
+        const lightness = b.residential ? 72 + (i % 4) * 3 : 68 + (i % 5) * 3
+        const color = `hsl(${hue}, ${sat}%, ${lightness}%)`
 
         // Inset collider vs visual; skip if inset would go non-positive.
         const hx = Math.max(0.05, b.width * 0.5 - COLLIDER_INSET_M)

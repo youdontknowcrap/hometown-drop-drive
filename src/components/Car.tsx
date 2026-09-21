@@ -325,10 +325,11 @@ export function Car({
 
     const t = rb.translation()
 
-    // Soft void edge (streaming): crawl-clamp outside loaded tiles
-    // instead of the hard ~200 ft road corridor wall.
+    // Soft void edge (streaming): clamp ONLY outside union AABB of active
+    // tiles (+ small outward margin). Hard ~200 ft corridor stays OFF while
+    // streaming (Scene hardContainment=false). Never remount on tile load.
     if (loadedAabb) {
-      const clamped = softClampToLoadedAabb(t.x, t.z, loadedAabb)
+      const clamped = softClampToLoadedAabb(t.x, t.z, loadedAabb, 12)
       if (clamped.outside) {
         rb.setTranslation({ x: clamped.x, y: t.y, z: clamped.z }, true)
         const v = rb.linvel()

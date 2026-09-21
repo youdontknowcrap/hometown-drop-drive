@@ -8,8 +8,8 @@ import {
 } from '../lib/roadHeights'
 import type { RoadSurfaceWay } from '../lib/roadSurface'
 
-/** World-meter desert playfield. 1 UV tile = 20 m so speed is visible off-road too. */
-const DESERT_REPEAT_M = 20
+/** World-meter grass playfield. 1 UV tile = 20 m so speed is visible off-road too. */
+const GRASS_REPEAT_M = 20
 
 /**
  * Flat-fallback slab half-thickness (meters). Visual plane sits on top.
@@ -22,7 +22,7 @@ const GROUND_HALF_H = 0.5
 type GroundProps = {
   heightGrid: HeightGrid
   /**
-   * Widened road corridors for the desert trench pass (see buildRoadTrenchWays).
+   * Widened road corridors for the grass trench pass (see buildRoadTrenchWays).
    * Empty → no trench (flat / loading).
    */
   roadTrenchWays?: RoadSurfaceWay[]
@@ -39,7 +39,11 @@ function prepMaps(textures: THREE.Texture | THREE.Texture[]) {
 }
 
 /**
- * Textured desert displaced by Terrarium/SRTM heights (or flat fallback).
+ * Textured grass displaced by Terrarium/SRTM heights (or flat fallback).
+ *
+ * LEARNING — ground default is grass (not desert sand): Poly Haven
+ * `aerial_grass_rock` CC0 albedo + normal. Same trench dig as before so
+ * asphalt still sits in a shallow channel on hills.
  *
  * Vertex Y = sampleHeight(grid, x, z) — relative to spawn elev, so the Drop
  * point sits near y=0 and surrounding hills read as hills, not a flying carpet.
@@ -53,7 +57,10 @@ function prepMaps(textures: THREE.Texture | THREE.Texture[]) {
  */
 export function Ground({ heightGrid, roadTrenchWays = [] }: GroundProps) {
   const [diff, nor] = useTexture(
-    ['/textures/aerial_sand_diff_1k.jpg', '/textures/aerial_sand_nor_gl_1k.jpg'],
+    [
+      '/textures/aerial_grass_rock_diff_1k.jpg',
+      '/textures/aerial_grass_rock_nor_gl_1k.jpg',
+    ],
     prepMaps,
   )
 
@@ -88,7 +95,7 @@ export function Ground({ heightGrid, roadTrenchWays = [] }: GroundProps) {
     return { geometry: geo, centerX, centerZ, size, floorY }
   }, [heightGrid, roadTrenchWays])
 
-  const tiles = Math.max(4, size / DESERT_REPEAT_M)
+  const tiles = Math.max(4, size / GRASS_REPEAT_M)
   diff.repeat.set(tiles, tiles)
   nor.repeat.set(tiles, tiles)
 
@@ -107,6 +114,8 @@ export function Ground({ heightGrid, roadTrenchWays = [] }: GroundProps) {
         <meshStandardMaterial
           map={diff}
           normalMap={nor}
+          // Soft green multiply — albedo is already grassy; tint sells “lawn” under sun.
+          color="#c8e6a8"
           roughness={0.95}
           metalness={0}
         />

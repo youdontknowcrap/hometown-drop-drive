@@ -8,6 +8,8 @@ CC0 / public-domain assets only. No game rips (GTA, Fortnite, BeamNG, etc.).
   https://polyhaven.com/a/asphalt_01
 - `aerial_sand` — Rob Tuytel
   https://polyhaven.com/a/aerial_sand
+- `aerial_grass_rock` — Rob Tuytel (ground default grass)
+  https://polyhaven.com/a/aerial_grass_rock
 
 Files in `public/textures/` are 1K JPG (web toy size).
 

@@ -57,6 +57,13 @@ export const ACTIVE_RING = 1
  */
 export const PREFETCH_RING = 2
 
+/**
+ * How far ahead of the car (meters) we treat as “already there” for activate /
+ * prefetch. At ~60 mph ≈ 27 m/s, 700 m ≈ 26 s of runway — next tiles promote
+ * before soft-clamp can meet a continuing road at the AABB edge.
+ */
+export const ACTIVATE_LOOKAHEAD_M = 700
+
 /** Cap concurrent Overpass tile fetches — public interpreters 429 easily. */
 export const MAX_IN_FLIGHT = 2
 
@@ -223,6 +230,14 @@ export class StreetTileStreamer {
   private listeners = new Set<() => void>()
   private carTx = 0
   private carTz = 0
+  private lookTx = 0
+  private lookTz = 0
+  /**
+   * Stable activeWays reference — only replaced when the active set’s ways
+   * content actually changes. Prevents Road / elev thrash on loading-count emits.
+   */
+  private cachedActiveWays: StreetWay[] = []
+  private cachedActiveKey = ''
   /** Bumped on dispose / Drop reset so late fetches are ignored. */
   private gen = 0
 
@@ -243,11 +258,38 @@ export class StreetTileStreamer {
     for (const fn of this.listeners) fn()
   }
 
+  /** Notify React without bumping ways-version semantics (loading HUD only). */
+  private emitMeta() {
+    for (const fn of this.listeners) fn()
+  }
+
+  /** Fingerprint of which tiles are active + their way counts (not loading). */
+  private activeContentKey(): string {
+    const parts: string[] = []
+    for (const t of this.tiles.values()) {
+      if (t.status !== 'active') continue
+      parts.push(`${t.key}:${t.ways.length}`)
+    }
+    parts.sort()
+    return parts.join('|')
+  }
+
+  private refreshActiveWaysCache(): StreetWay[] {
+    const key = this.activeContentKey()
+    if (key === this.cachedActiveKey) return this.cachedActiveWays
+    const activeTiles = [...this.tiles.values()].filter((t) => t.status === 'active')
+    this.cachedActiveWays = dedupeWays(activeTiles.flatMap((t) => t.ways))
+    this.cachedActiveKey = key
+    return this.cachedActiveWays
+  }
+
   dispose() {
     this.disposed = true
     this.gen += 1
     this.queue.length = 0
     this.tiles.clear()
+    this.cachedActiveWays = []
+    this.cachedActiveKey = ''
     this.listeners.clear()
   }
 
@@ -256,7 +298,8 @@ export class StreetTileStreamer {
     const activeTiles = all.filter((t) => t.status === 'active')
     const loadingCount = all.filter((t) => t.status === 'loading').length
     const cachedCount = all.filter((t) => t.status === 'cached').length
-    const activeWays = dedupeWays(activeTiles.flatMap((t) => t.ways))
+    // Stable reference when active content unchanged — Road meshes stay put.
+    const activeWays = this.refreshActiveWaysCache()
     return {
       origin: this.origin,
       dropLabel: this.dropLabel,
@@ -281,6 +324,8 @@ export class StreetTileStreamer {
     const key = makeTileKey(0, 0)
     this.tiles.clear()
     this.queue.length = 0
+    this.cachedActiveWays = []
+    this.cachedActiveKey = ''
     this.source = 'demo'
     this.tiles.set(key, {
       key,
@@ -296,52 +341,95 @@ export class StreetTileStreamer {
   bootstrapAroundDrop() {
     this.carTx = 0
     this.carTz = 0
-    this.reconcile(0, 0, true)
+    this.lookTx = 0
+    this.lookTz = 0
+    this.reconcile(0, 0, 0, 0, true)
   }
 
-  /** Poll from rAF/interval with car local XZ (meters relative to Drop). */
-  updateCar(x: number, z: number) {
+  /**
+   * Poll with car local XZ. Optional yaw + speedMph drive look-ahead so the
+   * next tiles activate *before* soft-clamp meets a continuing road.
+   * Yaw 0 = world −Z (same as Car / GpsDash).
+   */
+  updateCar(x: number, z: number, yaw = 0, speedMph = 0) {
     if (this.disposed || this.source === 'demo') return
     const { tx, tz } = worldToTile(x, z)
-    if (tx !== this.carTx || tz !== this.carTz) {
+    // Look-ahead point along heading; floor speed so even crawling still primes.
+    const lookM = ACTIVATE_LOOKAHEAD_M
+    const lx = x - Math.sin(yaw) * lookM
+    const lz = z - Math.cos(yaw) * lookM
+    const look = worldToTile(lx, lz)
+    if (
+      tx !== this.carTx ||
+      tz !== this.carTz ||
+      look.tx !== this.lookTx ||
+      look.tz !== this.lookTz
+    ) {
       this.carTx = tx
       this.carTz = tz
-      this.reconcile(tx, tz, false)
+      this.lookTx = look.tx
+      this.lookTz = look.tz
+      this.reconcile(tx, tz, look.tx, look.tz, false)
     } else {
+      // Still pump — urgent look-ahead fetches may be waiting on the gap timer.
+      void speedMph
       this.pumpQueue()
     }
   }
 
-  private reconcile(cx: number, cz: number, bootstrap: boolean) {
+  /**
+   * Active = union of ACTIVE_RING around the car tile AND around the look-ahead
+   * tile. Prefetch ring is relative to the car (unload behind still works).
+   */
+  private reconcile(
+    cx: number,
+    cz: number,
+    lx: number,
+    lz: number,
+    bootstrap: boolean,
+  ) {
     const wantActive = new Set<TileKey>()
     const wantPrefetch = new Set<TileKey>()
 
-    for (let dz = -PREFETCH_RING; dz <= PREFETCH_RING; dz++) {
-      for (let dx = -PREFETCH_RING; dx <= PREFETCH_RING; dx++) {
-        const tx = cx + dx
-        const tz = cz + dz
-        const key = makeTileKey(tx, tz)
-        const d = chebyshev(cx, cz, tx, tz)
-        if (d <= ACTIVE_RING) wantActive.add(key)
-        wantPrefetch.add(key)
-
-        if (!this.tiles.has(key)) {
-          this.tiles.set(key, {
-            key,
-            tx,
-            tz,
-            status: 'empty',
-            ways: [],
-          })
-          this.enqueue(key, bootstrap && d <= ACTIVE_RING)
+    const consider = (ox: number, oz: number, ring: number, into: Set<TileKey>) => {
+      for (let dz = -ring; dz <= ring; dz++) {
+        for (let dx = -ring; dx <= ring; dx++) {
+          into.add(makeTileKey(ox + dx, oz + dz))
         }
+      }
+    }
+    consider(cx, cz, ACTIVE_RING, wantActive)
+    consider(lx, lz, ACTIVE_RING, wantActive)
+    consider(cx, cz, PREFETCH_RING, wantPrefetch)
+    // Also prefetch around look-ahead so the outer shell is warm before arrival.
+    consider(lx, lz, PREFETCH_RING, wantPrefetch)
+
+    for (const key of wantPrefetch) {
+      const [txs, tzs] = key.split(',')
+      const txi = Number(txs)
+      const tzi = Number(tzs)
+      if (!this.tiles.has(key)) {
+        this.tiles.set(key, {
+          key,
+          tx: txi,
+          tz: tzi,
+          status: 'empty',
+          ways: [],
+        })
+        const urgent =
+          bootstrap &&
+          (chebyshev(cx, cz, txi, tzi) <= ACTIVE_RING ||
+            chebyshev(lx, lz, txi, tzi) <= ACTIVE_RING)
+        this.enqueue(key, urgent)
       }
     }
 
     let changed = false
     for (const tile of [...this.tiles.values()]) {
-      const d = chebyshev(cx, cz, tile.tx, tile.tz)
-      if (d > PREFETCH_RING) {
+      const dCar = chebyshev(cx, cz, tile.tx, tile.tz)
+      const dLook = chebyshev(lx, lz, tile.tx, tile.tz)
+      // Keep if within prefetch of car OR look-ahead (don’t dump the path ahead).
+      if (dCar > PREFETCH_RING && dLook > PREFETCH_RING) {
         this.tiles.delete(tile.key)
         changed = true
         continue
@@ -352,7 +440,8 @@ export class StreetTileStreamer {
           tile.status = 'active'
           changed = true
         } else if (tile.status === 'empty' || tile.status === 'error') {
-          this.enqueue(tile.key, bootstrap)
+          // Urgent when on the look-ahead active ring — soft edge must not win.
+          this.enqueue(tile.key, true)
         }
       } else if (tile.status === 'active') {
         // HARD GPS RULE: demote → disappears from Scene + GpsDash together.
@@ -408,7 +497,8 @@ export class StreetTileStreamer {
   private startFetch(tile: StreetTile) {
     tile.status = 'loading'
     this.inFlight += 1
-    this.emit()
+    // Meta only — loading spinner must NOT bump streamVersion / remount world.
+    this.emitMeta()
 
     const gen = this.gen
     const bbox = tileToBbox(tile.tx, tile.tz, this.origin)
@@ -419,9 +509,11 @@ export class StreetTileStreamer {
         const live = this.tiles.get(tile.key)
         if (!live) return
         live.ways = ways
-        const d = chebyshev(this.carTx, this.carTz, live.tx, live.tz)
-        // Only active tiles feed Scene + GpsDash (together).
-        live.status = d <= ACTIVE_RING ? 'active' : 'cached'
+        const dCar = chebyshev(this.carTx, this.carTz, live.tx, live.tz)
+        const dLook = chebyshev(this.lookTx, this.lookTz, live.tx, live.tz)
+        // Active if near the car OR the look-ahead point (velocity runway).
+        live.status =
+          dCar <= ACTIVE_RING || dLook <= ACTIVE_RING ? 'active' : 'cached'
         this.emit()
       })
       .catch((err: unknown) => {
@@ -441,14 +533,19 @@ export class StreetTileStreamer {
 }
 
 /**
- * Soft void edge: if the car leaves the union of active tiles, clamp back
- * into the AABB. Replaces the hard ~200 ft road-corridor walls while streaming.
+ * Soft void edge: clamp ONLY when outside the union AABB of *active* tiles.
+ *
+ * LEARNING — padM is a small OUTWARD margin (meters past the tile edge), not a
+ * shrink. Never use this to fence mid-asphalt: if a road is on a loaded tile it
+ * sits inside the AABB. Hitting a “wall on a road” means the next tile was not
+ * active yet — fix with velocity-ahead activate (updateCar look-ahead), not a
+ * tighter clamp. Replaces the hard ~200 ft corridor while streaming.
  */
 export function softClampToLoadedAabb(
   x: number,
   z: number,
   aabb: LoadedAabb | null,
-  padM = 24,
+  padM = 12,
 ): { x: number; z: number; outside: boolean } {
   if (!aabb) return { x, z, outside: false }
   const minX = aabb.minX - padM
