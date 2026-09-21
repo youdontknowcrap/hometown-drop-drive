@@ -40,8 +40,10 @@ export function Buildings({ boxes, heightGrid, version }: BuildingsProps) {
     })
   }, [boxes, heightGrid])
 
-  if (!placed.length) return null
-
+  // Always keep the fixed RigidBody mounted. Returning null when boxes is
+  // empty (then remounting when the first streamed buildings land) churns a
+  // Physics sibling next to Car — avoid any chance of player-car blip.
+  // key={version} remounts colliders on Drop only (routeVersion / dropNonce).
   return (
     <RigidBody key={version} type="fixed" colliders={false} position={[0, 0, 0]}>
       {placed.map((b, i) => {

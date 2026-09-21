@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { Canvas } from '@react-three/fiber'
-import { Sky, PerspectiveCamera } from '@react-three/drei'
+import { Sky, PerspectiveCamera, useTexture } from '@react-three/drei'
 import { Physics } from '@react-three/rapier'
 import { Ground } from './Ground'
 import { FarGround } from './FarGround'
@@ -45,6 +45,17 @@ import {
   workerFetchElevNear,
 } from '../lib/tileLoaderClient'
 import { carPose } from '../lib/carPose'
+
+// Preload textures outside Suspense that wraps Physics — first streamed Road /
+// FarGround must NOT suspend Car RigidBody (Joey lock: remount ⇒ signedMph→0 +
+// FollowCam intro snap when player-car blips).
+useTexture.preload([
+  '/textures/asphalt_01_diff_1k.jpg',
+  '/textures/asphalt_01_nor_gl_1k.jpg',
+  '/textures/aerial_grass_rock_diff_1k.jpg',
+  '/textures/aerial_grass_rock_nor_gl_1k.jpg',
+])
+
 
 type SceneProps = {
   keys: MutableRefObject<DriveKeys>
@@ -485,40 +496,52 @@ export function Scene({
         rayleigh={weather.rayleigh}
       />
 
-      <Suspense fallback={null}>
-        <Physics gravity={[0, -9.81, 0]} interpolate>
+      {/*
+        LEARNING — Suspense isolation (Joey remount lock):
+          One outer Suspense around Physics + RoadTiles + StreetLabels meant the
+          first asphalt useTexture OR Troika Text font load suspended the WHOLE
+          boundary → Physics/Car unmounted → RigidBody remount at spawn,
+          signedMph ref re-inits to 0, FollowCam loses player-car (intro wiggle).
+          Nested boundaries: texture/font suspends never remount Car.
+      */}
+      <Physics gravity={[0, -9.81, 0]} interpolate>
+        <Suspense fallback={null}>
           <Ground heightGrid={heightGrid} roadTrenchWays={roadTrenchWays} />
-          {/* spawnKey = dropNonce only — tile stream must not remount RigidBody */}
-          <Car
-            keys={keys}
-            path={drapedRoute}
-            guidanceOn={guidanceOn}
-            spawn={spawnWithHeight}
-            spawnYaw={yaw}
-            spawnKey={routeVersion}
-            heightGrid={heightGrid}
-            paintHex={paintHex}
-            roadSurfaceWays={roadSurfaceWays}
-            loadedAabb={hardContainment ? null : loadedAabb}
-          />
-          {hardContainment ? (
-            <RoadContainment
-              ways={localWays}
-              version={routeVersion}
-              reliefM={Math.max(0, heightGrid.maxRel - heightGrid.minRel)}
-            />
-          ) : null}
-          <Buildings
-            boxes={driveableBuildings}
-            heightGrid={heightGrid}
+        </Suspense>
+        {/* spawnKey = dropNonce only — tile stream must not remount RigidBody */}
+        <Car
+          keys={keys}
+          path={drapedRoute}
+          guidanceOn={guidanceOn}
+          spawn={spawnWithHeight}
+          spawnYaw={yaw}
+          spawnKey={routeVersion}
+          heightGrid={heightGrid}
+          paintHex={paintHex}
+          roadSurfaceWays={roadSurfaceWays}
+          loadedAabb={hardContainment ? null : loadedAabb}
+        />
+        {hardContainment ? (
+          <RoadContainment
+            ways={localWays}
             version={routeVersion}
+            reliefM={Math.max(0, heightGrid.maxRel - heightGrid.minRel)}
           />
-        </Physics>
-        {/* Far skyline: visual only — outside Physics, no car colliders. */}
+        ) : null}
+        <Buildings
+          boxes={driveableBuildings}
+          heightGrid={heightGrid}
+          version={routeVersion}
+        />
+      </Physics>
+      {/* Far skyline: visual only — outside Physics, own Suspense (grass tex). */}
+      <Suspense fallback={null}>
         {farHeightGrid ? (
           <FarGround nearGrid={heightGrid} farGrid={farHeightGrid} roadTrenchWays={roadTrenchWays} />
         ) : null}
-        {/* Per-tile asphalt — one new tile remeshes that group only (hitch fix). */}
+      </Suspense>
+      {/* Per-tile asphalt — suspend here only, never Physics/Car. */}
+      <Suspense fallback={null}>
         <RoadTiles
           origin={origin}
           tiles={
@@ -528,11 +551,13 @@ export function Scene({
           }
           heightGrid={heightGrid}
         />
-        {/* Floating street names — world-space Text, cull near car (see StreetLabels). */}
-        <StreetLabels streets={localStreets} heightGrid={heightGrid} />
-        <RouteLine points={drapedRoute} visible={showRoute} />
-        <Rain density={weather.rain ? weather.rainDensity : 0} />
       </Suspense>
+      {/* Troika Text font loads — own boundary so new labels never remount Car. */}
+      <Suspense fallback={null}>
+        <StreetLabels streets={localStreets} heightGrid={heightGrid} />
+      </Suspense>
+      <RouteLine points={drapedRoute} visible={showRoute} />
+      <Rain density={weather.rain ? weather.rainDensity : 0} />
 
       <FollowCam
         targetSpawn={spawnWithHeight}

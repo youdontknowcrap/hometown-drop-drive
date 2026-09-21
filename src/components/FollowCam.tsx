@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
+import { carPose } from '../lib/carPose'
 
 type FollowCamProps = {
   targetSpawn: [number, number, number]
@@ -62,14 +63,23 @@ export function FollowCam({
     }
 
     const car = scene.getObjectByName('player-car')
-    if (!car) return
-
     const carPos = new THREE.Vector3()
-    car.getWorldPosition(carPos)
-    const q = new THREE.Quaternion()
-    car.getWorldQuaternion(q)
-    const back = new THREE.Vector3(0, 0, 1).applyQuaternion(q)
+    const back = new THREE.Vector3()
+    if (car) {
+      car.getWorldPosition(carPos)
+      const q = new THREE.Quaternion()
+      car.getWorldQuaternion(q)
+      back.set(0, 0, 1).applyQuaternion(q)
+    } else if (carPose.ready) {
+      // Belt: if player-car blips for a frame (mesh suspend / sibling churn),
+      // keep chase continuous from authored pose — never re-run intro snap.
+      carPos.set(carPose.x, carPose.y, carPose.z)
+      back.set(Math.sin(carPose.yaw), 0, Math.cos(carPose.yaw))
+    } else {
+      return
+    }
     back.y = 0
+    if (back.lengthSq() < 1e-8) back.set(0, 0, 1)
     back.normalize()
 
     const desired = carPos
