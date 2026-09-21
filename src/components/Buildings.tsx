@@ -13,7 +13,13 @@ type BuildingsProps = {
 /**
  * Extruded AABB building boxes on the height grid.
  *
- * Solid CuboidColliders on every kept box (Joey lock — car should bump).
+ * LEARNING — selective colliders:
+ *   Visual meshes are cheap; Rapier CuboidColliders are not when you keep
+ *   hundreds of houses. osmBuildings marks solidCollider=true for the nearest
+ *   N boxes and large footprints (landmarks). Far small houses are mesh-only
+ *   so the neighborhood looks full without melting the physics step.
+ *   Joey still bumps into what he drives past near Drop / big boxes.
+ *
  * Y sits on sampleHeight so boxes follow hills. No interiors, no ripped assets.
  */
 export function Buildings({ boxes, heightGrid, version }: BuildingsProps) {
@@ -30,9 +36,10 @@ export function Buildings({ boxes, heightGrid, version }: BuildingsProps) {
     <RigidBody key={version} type="fixed" colliders={false} position={[0, 0, 0]}>
       {placed.map((b, i) => {
         const y = b.groundY + b.height * 0.5
-        // Soft desert-town palette — readable, not neon.
-        const hue = 25 + (i % 7) * 4
-        const color = `hsl(${hue}, 18%, ${42 + (i % 5) * 4}%)`
+        // Soft desert-town palette — houses slightly warmer than warehouses.
+        const hue = b.residential ? 28 + (i % 5) * 3 : 22 + (i % 7) * 4
+        const lightness = b.residential ? 46 + (i % 4) * 3 : 40 + (i % 5) * 4
+        const color = `hsl(${hue}, 18%, ${lightness}%)`
         return (
           <group key={i} position={[b.x, y, b.z]}>
             <mesh castShadow receiveShadow>
@@ -43,12 +50,14 @@ export function Buildings({ boxes, heightGrid, version }: BuildingsProps) {
                 metalness={0.05}
               />
             </mesh>
-            {/* Solid collider — half-extents match the visual box. */}
-            <CuboidCollider
-              args={[b.width * 0.5, b.height * 0.5, b.depth * 0.5]}
-              friction={0.6}
-              restitution={0}
-            />
+            {/* Solid collider only when flagged — half-extents match the visual. */}
+            {b.solidCollider ? (
+              <CuboidCollider
+                args={[b.width * 0.5, b.height * 0.5, b.depth * 0.5]}
+                friction={0.6}
+                restitution={0}
+              />
+            ) : null}
           </group>
         )
       })}
