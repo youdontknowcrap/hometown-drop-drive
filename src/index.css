@@ -195,6 +195,10 @@ body,
 }
 
 .gps-toolbar {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  align-items: center;
   pointer-events: auto;
   display: flex;
   justify-content: flex-end;

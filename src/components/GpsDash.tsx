@@ -18,12 +18,36 @@ const SIZE = 168
  * Teaching: classic car GPS is a *local* moving map, not a whole-city overview.
  * ~220 m across ≈ a few blocks — enough to see turns coming without zooming out.
  */
-const VIEW_METERS = 220
+/** Default meters across the dial (classic local GPS feel). */
+const DEFAULT_VIEW_METERS = 220
+const MIN_VIEW_METERS = 120
+const MAX_VIEW_METERS = 1600
+const ZOOM_STEP = 1.35
+const ZOOM_KEY = 'hdd-gps-view-meters'
 
 /** localStorage key for north-up vs track-up preference. */
 const MAP_MODE_KEY = 'hdd-gps-map-mode'
 
 type MapMode = 'track' | 'north'
+
+
+function readViewMeters(): number {
+  try {
+    const v = Number(localStorage.getItem(ZOOM_KEY))
+    if (Number.isFinite(v) && v >= MIN_VIEW_METERS && v <= MAX_VIEW_METERS) return v
+  } catch {
+    /* private mode */
+  }
+  return DEFAULT_VIEW_METERS
+}
+
+function writeViewMeters(m: number) {
+  try {
+    localStorage.setItem(ZOOM_KEY, String(m))
+  } catch {
+    /* ignore */
+  }
+}
 
 function readMapMode(): MapMode {
   try {
@@ -77,6 +101,9 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const coordRef = useRef<HTMLParagraphElement>(null)
   const [mapMode, setMapMode] = useState<MapMode>(readMapMode)
+  const [viewMeters, setViewMeters] = useState(readViewMeters)
+  const viewMetersRef = useRef(viewMeters)
+  viewMetersRef.current = viewMeters
   // Ref so the rAF draw loop always sees the latest mode without restarting.
   const mapModeRef = useRef(mapMode)
   mapModeRef.current = mapMode
@@ -86,6 +113,10 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
   }, [mapMode])
 
   useEffect(() => {
+    writeViewMeters(viewMeters)
+  }, [viewMeters])
+
+  useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
@@ -93,7 +124,9 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
 
     const half = SIZE / 2
     // meters → pixels: VIEW_METERS spans the full dial width.
-    const mPerPx = VIEW_METERS / SIZE
+    // Zoom: meters across the dial. Zoomed-out shows more of the *loaded*
+    // map only (hard GPS rule — never strokes prefetch tiles).
+    const mPerPx = viewMetersRef.current / SIZE
 
     /**
      * World (x, z) → canvas pixels, with the car at the dial center.
@@ -248,7 +281,7 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
     }
     raf = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(raf)
-  }, [origin, ways, route])
+  }, [origin, ways, route, viewMeters])
 
   const toggleMode = () => {
     setMapMode((m) => (m === 'track' ? 'north' : 'track'))
@@ -274,6 +307,33 @@ export function GpsDash({ origin, ways, route = [] }: GpsDashProps) {
         >
           {mapMode === 'track' ? 'Track-up' : 'North-up'}
         </button>
+        <button
+          type="button"
+          className="gps-mode-btn"
+          onClick={() =>
+            setViewMeters((m) =>
+              Math.max(MIN_VIEW_METERS, Math.round(m / ZOOM_STEP)),
+            )
+          }
+          title="Zoom in (less ground, closer streets)"
+          aria-label="GPS zoom in"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className="gps-mode-btn"
+          onClick={() =>
+            setViewMeters((m) =>
+              Math.min(MAX_VIEW_METERS, Math.round(m * ZOOM_STEP)),
+            )
+          }
+          title="Zoom out (more of the loaded map)"
+          aria-label="GPS zoom out"
+        >
+          −
+        </button>
+
       </div>
       <canvas ref={canvasRef} width={SIZE} height={SIZE} aria-label="GPS" />
       <p className="gps-coord" ref={coordRef}>

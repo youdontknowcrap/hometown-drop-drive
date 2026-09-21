@@ -30,6 +30,10 @@ type HudProps = {
   farTerrainMessage?: string
   /** Building load status. */
   buildingsMessage?: string
+  /** Open-world streaming tile count line. */
+  tilesMessage?: string
+  /** Live streamer status (loading / error). */
+  streamMessage?: string
   /** Live or preset weather summary. */
   weatherSummary?: string
   weatherPreset: WeatherPreset
@@ -104,6 +108,8 @@ export function Hud({
   terrainMessage,
   farTerrainMessage,
   buildingsMessage,
+  tilesMessage,
+  streamMessage,
   weatherSummary,
   weatherPreset,
   onWeatherPreset,
@@ -297,6 +303,16 @@ export function Hud({
           {buildingsMessage ? (
             <p className="hud-status" role="status">
               {buildingsMessage}
+            </p>
+          ) : null}
+          {tilesMessage ? (
+            <p className="hud-status" role="status">
+              {tilesMessage}
+            </p>
+          ) : null}
+          {streamMessage ? (
+            <p className="hud-status" role="status">
+              {streamMessage}
             </p>
           ) : null}
           {weatherSummary ? (

@@ -58,6 +58,10 @@ type SceneProps = {
   weather: WeatherLook
   /** Body paint hex for Kenney sports sedan. */
   paintHex?: string
+  /** When false (streaming), skip hard ~200 ft corridor walls. */
+  hardContainment?: boolean
+  /** Soft void edge — union of active tile AABBs (local meters). */
+  loadedAabb?: { minX: number; maxX: number; minZ: number; maxZ: number } | null
 }
 
 /**
@@ -86,6 +90,8 @@ export function Scene({
   buildings = [],
   weather,
   paintHex,
+  hardContainment = true,
+  loadedAabb = null,
 }: SceneProps) {
   const localStreets = useMemo(
     () =>
@@ -288,12 +294,15 @@ export function Scene({
             heightGrid={heightGrid}
             paintHex={paintHex}
             roadSurfaceWays={roadSurfaceWays}
+            loadedAabb={hardContainment ? null : loadedAabb}
           />
-          <RoadContainment
-            ways={localWays}
-            version={routeVersion}
-            reliefM={Math.max(0, heightGrid.maxRel - heightGrid.minRel)}
-          />
+          {hardContainment ? (
+            <RoadContainment
+              ways={localWays}
+              version={routeVersion}
+              reliefM={Math.max(0, heightGrid.maxRel - heightGrid.minRel)}
+            />
+          ) : null}
           <Buildings
             boxes={driveableBuildings}
             heightGrid={heightGrid}

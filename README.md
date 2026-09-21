@@ -2,7 +2,7 @@
 
 Kid-friendly **browser driving toy**: type a start and stop address, get an OpenStreetMap driving path, and drive with WASD or a USB game controller.
 
-Drop at an address. Load **every OSM street in a 3 km radius** (including backroads / tracks). Drive them. Leave the asphalt a bit, then hit a **hard stop ~200 ft** off the road network (not curb-hugging Autopia rails). GPS dash + camera sliders. Hills from **Terrarium/SRTM** with **Open-Meteo elevation** fallback; OSM building boxes; local weather + sun.
+Drop at an address. Drop loads the tile under you + neighbors, then **streams ~1 km street tiles** as you drive (including backroads / tracks). Drive them. Leave the asphalt a bit, then hit a **hard stop ~200 ft** off the road network (not curb-hugging Autopia rails). GPS dash + camera sliders. Hills from **Terrarium/SRTM** with **Open-Meteo elevation** fallback; OSM building boxes; local weather + sun.
 
 Web-first prototype (no Unity). Live routing + elevation need `npm run dev` (Vite proxy). Offline / CORS failure falls back to a Ridgecrest demo loop and flat ground.
 
@@ -121,7 +121,7 @@ We displace the ground under the loaded street bbox, drape asphalt + GPS line, a
 
 Playtest fix (hills eat roads): densify OSM centerlines to **0.5×`cellSize`**, raise ribbons ~**1.25 m** above `sampleHeight` (arcade curb), dig a matching **desert trench** under road corridors on Ground / FarGround blend, and strengthen `polygonOffset` / `renderOrder`. `sampleHeight` itself is unchanged — the car still pins Y to the same sampler with clearance a hair above the bias so it sits on asphalt.
 
-This works **US-wide** for a later cross-country pass. **Road streaming** (issue #11) is separate — elevation already follows lat/lng; OSM streets are still a ~3 km Overpass box today.
+This works **US-wide** for a later cross-country pass. **Road streaming (#11) is live** — ~1 km tiles load/unload with the car; elevation still follows lat/lng via Terrarium.
 
 See `src/lib/terrarium.ts`, `src/components/Ground.tsx`, Vite `/api/terrarium` proxy.
 
@@ -190,9 +190,51 @@ Now the centerline is a **dark asphalt ribbon** (not desert-with-rails): ~7.2 m 
 - OSM buildings (#5) — parked
 - Production geocode proxy (#6)
 - Drop / arrive / multi-stop (#8)
-- Streaming street tiles (#11) — pair with Terrarium for cross-country
+- Street tile streaming (#11) — **shipped**: ~1 km tiles, soft void edge, GPS zoom
 - Water + biome polish on top of elevation (#14 remainder)
 - Blue marble entry (#15)
+
+
+## Street tile streaming (open world)
+
+Drop no longer freezes one 3 km Overpass box forever. Streets stream as **~1 km tiles**:
+
+```
+TILE_M = 1000
+tx = floor(localX / TILE_M)
+tz = floor(localZ / TILE_M)
+```
+
+At Drop latitude φ: `Δlat ≈ TILE_M / 111320`, `Δlng ≈ TILE_M / (111320·cos φ)`.
+
+- **Active ring = 1** → 3×3 tiles live in Scene **and** GpsDash (~3 km across)
+- **Prefetch ring = 2** → outer ring may download into cache only
+- Leaving a tile farther than the prefetch ring **unloads** it from both world and dial
+
+### Hard GPS rule (Joey lock)
+
+GpsDash strokes **only** streets from tiles with `status === 'active'` (mounted in
+Scene/Road). Prefetch may hit the network, but never paints on the dial until
+that tile activates. When a tile loads into the 3D world, it appears on GPS at
+the same time — that **is** the visual load indicator.
+
+### Soft edge
+
+The hard ~200 ft road-corridor walls are off while streaming. Off-road bump +
+50% speed still apply on loaded asphalt. Driving into unloaded void soft-clamps
+you back into the loaded AABB (no invisible brick wall).
+
+### GPS zoom
+
+`+` / `−` on the dial change meters-across-the-map (persisted in `localStorage`).
+Zoomed out shows more of the **loaded** map; driving toward the edge of loaded
+data still triggers the next tile (world + then GPS).
+
+### HUD
+
+`Tiles: N loaded · streaming` — live active tile count.
+
+See `src/lib/streetTiles.ts` (math + queue) and `src/hooks/useStreetStreaming.ts`.
 
 ## Licenses
 

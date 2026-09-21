@@ -7,7 +7,8 @@ import { releaseDriveFocus, useKeyboard } from './hooks/useKeyboard'
 import { localToLatLng, polylineToLocal, type LatLng } from './lib/geo'
 import { carPose } from './lib/carPose'
 import { distanceToPath } from './lib/guidance'
-import { fetchStreetWorld, getDemoWorld, type StreetWorld } from './lib/osmStreets'
+import { getDemoWorld, type StreetWorld } from './lib/osmStreets'
+import { useStreetStreaming } from './hooks/useStreetStreaming'
 import { routeBetween, routeToAddress, type NavRoute } from './lib/routing'
 import { fetchBuildings, type BuildingBox } from './lib/osmBuildings'
 import {
@@ -35,9 +36,9 @@ export default function App() {
   const [dropAddress, setDropAddress] = useState(DEFAULT_DROP)
   const [destAddress, setDestAddress] = useState(DEFAULT_DEST)
   const [guidanceOn, setGuidanceOn] = useState(true)
-  const [busy, setBusy] = useState(false)
   const [world, setWorld] = useState<StreetWorld>(() => getDemoWorld())
-  const [worldVersion, setWorldVersion] = useState(0)
+  /** Bumped on every Drop so the streamer restarts cleanly. */
+  const [dropNonce, setDropNonce] = useState(0)
   // Slightly longer chase default — more ground rush without faking mph.
   const [camDistance, setCamDistance] = useState(20)
   const [camHeight, setCamHeight] = useState(8)
@@ -73,44 +74,41 @@ export default function App() {
     [weatherPreset, liveWeather],
   )
 
-  const onDrop = useCallback(async () => {
-    setBusy(true)
-    try {
-      const next = await fetchStreetWorld(dropAddress)
-      setWorld(next)
-      setWorldVersion((v) => v + 1)
-      // Fresh neighborhood — clear any leftover GPS so we don't draw a
-      // stale blue line against a new origin.
-      setNav(null)
-      destRef.current = null
-      destLabelRef.current = ''
-      navLocalRef.current = []
-      setGpsStatus('idle')
-      setGpsMessage('')
-      setBuildings([])
-      setBuildingsMessage('Loading buildings…')
-      setLiveWeather(null)
 
-      // Fire-and-forget scenery + weather for the new Drop (don't block Drop UX).
-      void fetchBuildings(next.origin).then((bw) => {
-        setBuildings(bw.boxes)
-        setBuildingsMessage(bw.message)
-      })
-      void fetchLocalWeather(next.origin).then((w) => {
-        setLiveWeather(w)
-      })
-    } finally {
-      setBusy(false)
-      // Playtest #17: leave the address field so WASD drives immediately.
-      releaseDriveFocus()
-    }
-  }, [dropAddress])
+  // Open-world street streaming (#11). activeWays is the ONLY list Scene +
+  // GpsDash may draw (hard GPS rule — no prefetch ghosts on the dial).
+  const stream = useStreetStreaming(dropAddress, dropNonce)
+
+  // Mirror streamer world into the existing `world` state so Hud / Scene keep
+  // working; ways always come from active tiles only.
+  useEffect(() => {
+    if (!stream.streaming && stream.busy) return
+    setWorld(stream.world)
+    // streamVersion drives Scene remounts via routeVersion
+  }, [stream.world, stream.streamVersion, stream.streaming, stream.busy])
+
+  const onDrop = useCallback(async () => {
+    // Clear GPS against the old origin; streamer restarts via dropNonce.
+    setNav(null)
+    destRef.current = null
+    destLabelRef.current = ''
+    navLocalRef.current = []
+    setGpsStatus('idle')
+    setGpsMessage('')
+    setBuildings([])
+    setBuildingsMessage('Loading buildings…')
+    setLiveWeather(null)
+    setDropNonce((n) => n + 1)
+    // Playtest #17: leave the address field so WASD drives immediately.
+    releaseDriveFocus()
+  }, [])
 
   useEffect(() => {
     if (booted.current) return
     booted.current = true
-    void onDrop()
-  }, [onDrop])
+    // Nonce 0 already started the stream via the hook; just clear focus.
+    releaseDriveFocus()
+  }, [])
 
   // Refresh live weather every ~10 min while on Auto (cheap Open-Meteo call).
   useEffect(() => {
@@ -120,6 +118,21 @@ export default function App() {
     }, 10 * 60_000)
     return () => window.clearInterval(id)
   }, [weatherPreset, world.origin])
+
+  // Scenery + weather follow the Drop origin (once streaming has one).
+  useEffect(() => {
+    if (!stream.streaming) return
+    const origin = stream.world.origin
+    if (!origin.lat && !origin.lng) return
+    setBuildingsMessage('Loading buildings…')
+    void fetchBuildings(origin).then((bw) => {
+      setBuildings(bw.boxes)
+      setBuildingsMessage(bw.message)
+    })
+    void fetchLocalWeather(origin).then(setLiveWeather)
+    console.info('[stream]', stream.tileMath)
+  }, [stream.world.origin.lat, stream.world.origin.lng, stream.streaming])
+
 
   const applyNav = useCallback((next: NavRoute, status: GpsStatus) => {
     setNav(next)
@@ -175,8 +188,9 @@ export default function App() {
   }, [])
 
   const localWays = useMemo(
-    () => world.ways.map((w) => polylineToLocal(w.points, world.origin)),
-    [world],
+    // HARD GPS RULE: only active (Scene-mounted) ways — never prefetch cache.
+    () => stream.activeWays.map((w) => polylineToLocal(w.points, world.origin)),
+    [stream.activeWays, world.origin],
   )
 
   const routeLocal = useMemo(() => {
@@ -246,11 +260,13 @@ export default function App() {
         <Scene
           keys={keys}
           origin={world.origin}
-          ways={world.ways}
+          ways={stream.activeWays}
           routePath={routeLocal}
           guidanceOn={guidanceOn && hasDestination}
           showRoute={hasDestination}
-          routeVersion={worldVersion}
+          routeVersion={stream.streamVersion}
+          hardContainment={false}
+          loadedAabb={stream.loadedAabb}
           camDistance={camDistance}
           camHeight={camHeight}
           onTerrainMessage={setTerrainMessage}
@@ -264,7 +280,7 @@ export default function App() {
         dropAddress={dropAddress}
         destAddress={destAddress}
         guidanceOn={guidanceOn && hasDestination}
-        busy={busy}
+        busy={stream.busy}
         gpsBusy={gpsBusy}
         gpsStatus={gpsStatus}
         gpsMessage={gpsMessage}
@@ -273,6 +289,8 @@ export default function App() {
         terrainMessage={terrainMessage}
         farTerrainMessage={farTerrainMessage}
         buildingsMessage={buildingsMessage}
+        tilesMessage={`Tiles: ${stream.activeTileCount} loaded · streaming`}
+        streamMessage={stream.streamMessage}
         weatherSummary={weather.summary}
         weatherPreset={weatherPreset}
         onWeatherPreset={setWeatherPreset}

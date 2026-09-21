@@ -145,7 +145,7 @@ function bboxAround(origin: LatLng, radiusM: number) {
   }
 }
 
-async function geocode(query: string): Promise<LatLng & { label: string }> {
+export async function geocodeDrop(query: string): Promise<LatLng & { label: string }> {
   const res = await nominatimSearch(query)
   const data = (await res.json()) as NominatimHit[]
   if (!data.length) throw new Error(`No results for “${query}”`)
@@ -220,6 +220,44 @@ function demoWorld(message: string): StreetWorld {
   }
 }
 
+
+/**
+ * Overpass highways inside an explicit WGS84 bbox (south,west,north,east).
+ * Used by street-tile streaming so each ~1 km tile has its own request.
+ *
+ * LEARNING: same highway regex as Drop's first load — we only change *where*
+ * we ask, not *what* counts as a driveable way.
+ */
+export async function fetchWaysInBbox(
+  south: number,
+  west: number,
+  north: number,
+  east: number,
+): Promise<StreetWay[]> {
+  const query = `[out:json][timeout:25];
+(
+  way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road|track|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"](${south},${west},${north},${east});
+);
+out geom;`
+  const res = await overpassInterpreter(query)
+  const data = (await res.json()) as { elements?: OverpassWay[] }
+  const ways: StreetWay[] = []
+  for (const el of data.elements ?? []) {
+    if (!el.geometry || el.geometry.length < 2) continue
+    const highway = el.tags?.highway ?? 'road'
+    const name = el.tags?.name?.trim() || undefined
+    const ref = el.tags?.ref?.trim() || undefined
+    ways.push({
+      points: el.geometry.map((g) => ({ lat: g.lat, lng: g.lon })),
+      kind: classifyHighway(highway),
+      highway,
+      name,
+      ref,
+    })
+  }
+  return ways
+}
+
 export function getDemoWorld(): StreetWorld {
   return demoWorld(
     'DEMO streets (labeled crossroads) — Drop an address for live OSM. Not live map data.',
@@ -231,14 +269,14 @@ export async function fetchStreetWorld(dropAddress: string): Promise<StreetWorld
   if (!q) return getDemoWorld()
 
   try {
-    const drop = await geocode(q)
+    const drop = await geocodeDrop(q)
     const ways = await overpassHighways(drop, DROP_RADIUS_M)
     let streetMeters = 0
     for (const w of ways) streetMeters += polylineLengthMeters(w.points)
     const km = (streetMeters / 1000).toFixed(1)
     const paved = ways.filter((w) => w.kind === 'paved').length
     const dirt = ways.filter((w) => w.kind === 'dirt').length
-    const msg = `Live OSM: ${ways.length} ways (${paved} paved, ${dirt} track), ${km} km within ${(DROP_RADIUS_M / 1000).toFixed(1)} km. Hard stop ~200 ft off-road.`
+    const msg = `Live OSM: ${ways.length} ways (${paved} paved, ${dirt} track), ${km} km within ${(DROP_RADIUS_M / 1000).toFixed(1)} km. Streaming world: soft edge at unloaded tiles (see streetTiles.ts).`
     console.info('[streets]', {
       source: 'osm',
       wayCount: ways.length,

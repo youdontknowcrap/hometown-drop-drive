@@ -26,6 +26,10 @@ import {
   isOnRoadSurface,
   type RoadSurfaceWay,
 } from '../lib/roadSurface'
+import {
+  softClampToLoadedAabb,
+  type LoadedAabb,
+} from '../lib/streetTiles'
 
 const _euler = new THREE.Euler()
 const _forward = new THREE.Vector3()
@@ -104,6 +108,8 @@ type CarProps = {
    * Hard ~200 ft wall stays in RoadContainment — do not put that radius here.
    */
   roadSurfaceWays?: RoadSurfaceWay[]
+  /** Soft void edge while streaming (null = no clamp). */
+  loadedAabb?: LoadedAabb | null
 }
 
 function shadowClone(src: THREE.Object3D): THREE.Object3D {
@@ -261,6 +267,7 @@ export function Car({
   heightGrid,
   paintHex = DEFAULT_PAINT,
   roadSurfaceWays = [],
+  loadedAabb = null,
 }: CarProps) {
   const body = useRef<RapierRigidBody>(null)
   /** Authoritative signed speed (mph) along forward. Positive = nose direction. */
@@ -318,6 +325,16 @@ export function Car({
 
     const t = rb.translation()
 
+    // Soft void edge (streaming): crawl-clamp outside loaded tiles
+    // instead of the hard ~200 ft road corridor wall.
+    if (loadedAabb) {
+      const clamped = softClampToLoadedAabb(t.x, t.z, loadedAabb)
+      if (clamped.outside) {
+        rb.setTranslation({ x: clamped.x, y: t.y, z: clamped.z }, true)
+        const v = rb.linvel()
+        rb.setLinvel({ x: v.x * 0.35, y: v.y, z: v.z * 0.35 }, true)
+      }
+    }
     // --- On ribbon vs desert (soft) ---
     // Paved + track count as "road". Beyond half-width → offRoad.
     // Hard ~200 ft fence is RoadContainment — still the last-resort wall.
