@@ -439,6 +439,13 @@ export function Car({
       autopilot.current.on = false
     }
 
+    // AP is allowed to briefly leave the asphalt ribbon while it follows the
+    // blue line. Clear any manual leave-bump that was already in progress so
+    // the soft off-road feel cannot carry into autopilot.
+    if (autopilot.current.on) {
+      leaveBumpT.current = 0
+    }
+
     // --- Cruise (A / ✕ / C): edge toggle; brake or reverse always cancel ---
     // LEARNING: rising edge comes from sampleDriveInput so hold ≠ spam toggle.
     // While AP is on, ignore cruise toggle (AP already holds a target speed).
@@ -476,20 +483,23 @@ export function Car({
         : isOnRoadSurface(t.x, t.z, roadSurfaceWays)
 
     // Edge-trigger: only fire the arcade jolt when we *leave* the ribbon.
-    if (wasOnRoad.current && !onRoad) {
+    // Autopilot owns the route and must not inherit the manual off-road bump.
+    if (wasOnRoad.current && !onRoad && !autopilot.current.on) {
       leaveBumpT.current = LEAVE_BUMP_DURATION_S
       signedMph.current *= LEAVE_BUMP_SPEED_KEEP
     }
     wasOnRoad.current = onRoad
 
     // Sticky dirt: if already above 55 mph off-road, yank toward the cap first.
-    // AP raises the on-road ceiling to 200; off-road still 55 (desert mud).
-    const speedCap = onRoad
-      ? autopilot.current.on
-        ? AUTOPILOT_MAX_SPEED_MPH
+    // AP may leave the ribbon while following the blue line, so it bypasses
+    // both the intentional dirt drag and the 50% speed penalty.
+    const offRoadPenalty = !onRoad && !autopilot.current.on
+    const speedCap = autopilot.current.on
+      ? AUTOPILOT_MAX_SPEED_MPH
+      : offRoadPenalty
+        ? OFF_ROAD_MAX_SPEED_MPH
         : MAX_SPEED_MPH
-      : OFF_ROAD_MAX_SPEED_MPH
-    if (!onRoad) {
+    if (offRoadPenalty) {
       signedMph.current = dragTowardOffRoadCap(signedMph.current, dt)
     }
 
@@ -564,7 +574,7 @@ export function Car({
     let wantY = groundY + CAR_CLEARANCE_M
 
     // Leave-bump: half-sine lift so the curb thump reads even with Y pinned.
-    if (leaveBumpT.current > 0) {
+    if (leaveBumpT.current > 0 && !autopilot.current.on) {
       const u = 1 - leaveBumpT.current / LEAVE_BUMP_DURATION_S // 0 → 1
       wantY += LEAVE_BUMP_PEAK_M * Math.sin(Math.PI * u)
       leaveBumpT.current = Math.max(0, leaveBumpT.current - dt)
@@ -639,7 +649,7 @@ export function Car({
       // Re-sample height at the slid pose so hills stay under the tires.
       groundY = sampleHeight(heightGrid, apFollow.x, apFollow.z)
       let apY = groundY + CAR_CLEARANCE_M
-      if (leaveBumpT.current > 0) {
+      if (leaveBumpT.current > 0 && !autopilot.current.on) {
         // leaveBumpT already decremented above; reconstruct phase from remaining.
         const u = 1 - leaveBumpT.current / LEAVE_BUMP_DURATION_S
         apY += LEAVE_BUMP_PEAK_M * Math.sin(Math.PI * Math.max(0, Math.min(1, u)))
@@ -744,7 +754,9 @@ export function Car({
     carPose.metersLastSecond = od.last
     carPose.groundY = groundY
     carPose.elevMsl = relativeHeightToMsl(heightGrid, groundY)
-    carPose.offRoad = !onRoad
+    // The HUD's OFF ROAD −50% indicator describes the active manual penalty;
+    // AP can be physically over dirt without that soft restriction.
+    carPose.offRoad = !onRoad && !autopilot.current.on
     carPose.cruiseOn = cruise.current.on
     carPose.cruiseMph = cruise.current.on ? cruise.current.setMph : 0
     carPose.autopilotOn = autopilot.current.on

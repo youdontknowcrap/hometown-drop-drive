@@ -28,9 +28,9 @@ export const carPose = {
    */
   elevMsl: 0,
   /**
-   * True when beyond asphalt/track half-width (desert). Speedo shows
-   * "OFF ROAD −50%" while this is set. Soft feel only — hard 200 ft wall
-   * is still RoadContainment.
+   * True when manual driving is beyond asphalt/track half-width (desert).
+   * Speedo shows "OFF ROAD −50%" while this is set. Autopilot may be over
+   * dirt while following the blue line without the soft restriction.
    */
   offRoad: false,
   /**
