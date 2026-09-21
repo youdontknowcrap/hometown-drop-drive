@@ -17,6 +17,10 @@ export type LocalStreet = {
   points: XzPoint[]
   kind: StreetKind
   highway: string
+  /** OSM name (optional) — floating 3D labels. */
+  name?: string
+  /** OSM ref fallback for numbered roads. */
+  ref?: string
 }
 
 type RoadProps = {

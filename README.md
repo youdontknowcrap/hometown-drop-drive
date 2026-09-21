@@ -140,6 +140,12 @@ See `src/components/Car.tsx`.
 Left control frame hides to a thin tab (`H` or `[`, persisted in `localStorage`) so teens get a full-width drive view. Drop/GPS/weather stay usable when expanded.
 
 
+## Floating street names
+
+OSM ways often carry a `name` (or `ref` for numbered routes). We store those on `StreetWay`, place a GPU `Text` + `Billboard` a few meters above the nearest centerline point to the car, and cull hard (named only, one label per unique name, ~350 m range, fade at the edge). World-space font size gives free perspective: **bigger close, smaller far**. Demo fallback invents a couple of names (China Lake Blvd / Ridgecrest Blvd) so offline still teaches the feature.
+
+Verify: Drop Ridgecrest, drive China Lake Blvd — the name floats ahead and shrinks as you leave it behind.
+
 ## Why streets were missing (and what changed)
 
 OSM/OSRM already returned a centerline in lat/lng. Milestone 1 only drew a `Line` on a tan box. The datum was there; the street was not.
@@ -168,6 +174,7 @@ Now the centerline is a **dark asphalt ribbon** (not desert-with-rails): ~7.2 m 
 - Demo fallback with length shown in the HUD
 - Soft guidance (nearest segment + look-ahead meters), not rails
 - Hard ~200 ft off-road containment from the loaded street grid (Rapier)
+- Floating street-name labels in the 3D view (OSM `name`/`ref`, distance cull + perspective)
 - Set / clear destination + off-course OSRM reroute (Phase 1 GPS)
 
 **Later (issues)**

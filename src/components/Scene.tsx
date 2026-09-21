@@ -6,6 +6,7 @@ import { Ground } from './Ground'
 import { FarGround } from './FarGround'
 import { Car } from './Car'
 import { Road } from './Road'
+import { StreetLabels } from './StreetLabels'
 import { RoadContainment } from './RoadContainment'
 import { RouteLine } from './RouteLine'
 import { FollowCam } from './FollowCam'
@@ -61,6 +62,7 @@ type SceneProps = {
  * Terrain: Terrarium first, Open-Meteo elev fallback, quiet flat last.
  * Far LOD ring (~12 km, visual only) for distant mountain silhouette.
  * Sky/sun track Drop lat/lng + local clock; weather drives fog/rain/light.
+ * Floating street-name labels (StreetLabels) billboard near the car.
  */
 export function Scene({
   keys,
@@ -84,6 +86,8 @@ export function Scene({
         points: polylineToLocal(w.points, origin),
         kind: w.kind,
         highway: w.highway,
+        name: w.name,
+        ref: w.ref,
       })),
     [ways, origin],
   )
@@ -275,6 +279,8 @@ export function Scene({
           <FarGround nearGrid={heightGrid} farGrid={farHeightGrid} />
         ) : null}
         <Road streets={localStreets} heightGrid={heightGrid} />
+        {/* Floating street names — world-space Text, cull near car (see StreetLabels). */}
+        <StreetLabels streets={localStreets} heightGrid={heightGrid} />
         <RouteLine points={drapedRoute} visible={showRoute} />
         <Rain density={weather.rain ? weather.rainDensity : 0} />
       </Suspense>

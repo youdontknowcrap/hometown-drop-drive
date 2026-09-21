@@ -1,5 +1,6 @@
 /**
  * Drop pin → OSM highway grid. Address is a spawn, not a route.
+ * Ways keep `name` / `ref` for floating 3D street labels (StreetLabels).
  */
 import {
   metersPerDegree,
@@ -25,6 +26,15 @@ export type StreetWay = {
   points: LatLng[]
   kind: StreetKind
   highway: string
+  /**
+   * OSM `name` tag when present (e.g. "China Lake Boulevard").
+   * Empty / missing → no floating 3D label (cull unnamed stubs).
+   */
+  name?: string
+  /**
+   * OSM `ref` tag fallback for numbered roads (e.g. "CA 178") when name is absent.
+   */
+  ref?: string
 }
 
 export type StreetWorld = {
@@ -41,7 +51,8 @@ type NominatimHit = { lat: string; lon: string; display_name: string }
 
 type OverpassWay = {
   type: string
-  tags?: { highway?: string }
+  /** Overpass returns whatever tags exist; we only read highway / name / ref. */
+  tags?: { highway?: string; name?: string; ref?: string }
   geometry?: Array<{ lat: number; lon: number }>
 }
 
@@ -102,6 +113,26 @@ export function widthForHighway(highway: string): number {
   }
 }
 
+
+/**
+ * Human-readable label for a way: prefer name, else ref (numbered routes).
+ * Returns null when neither exists — callers should skip the floating label.
+ *
+ * LEARNING: Overpass `out geom` already includes all tags on the way. We used
+ * to ignore `name`, so GpsDash / 3D had geometry but no street strings. Same
+ * query; we just keep more of the JSON.
+ */
+export function displayNameForWay(way: {
+  name?: string
+  ref?: string
+}): string | null {
+  const name = way.name?.trim()
+  if (name) return name
+  const ref = way.ref?.trim()
+  if (ref) return ref
+  return null
+}
+
 function bboxAround(origin: LatLng, radiusM: number) {
   const { mPerDegLat, mPerDegLng } = metersPerDegree(origin.lat)
   const dLat = radiusM / mPerDegLat
@@ -138,10 +169,14 @@ out geom;`
   for (const el of data.elements ?? []) {
     if (!el.geometry || el.geometry.length < 2) continue
     const highway = el.tags?.highway ?? 'road'
+    const name = el.tags?.name?.trim() || undefined
+    const ref = el.tags?.ref?.trim() || undefined
     ways.push({
       points: el.geometry.map((g) => ({ lat: g.lat, lng: g.lon })),
       kind: classifyHighway(highway),
       highway,
+      name,
+      ref,
     })
   }
   if (!ways.length) throw new Error('Overpass returned no streets')
@@ -149,10 +184,27 @@ out geom;`
 }
 
 function demoWorld(message: string): StreetWorld {
+  // Invent a couple of names so offline demo still teaches floating labels.
   const ways: StreetWay[] = [
-    { points: DEMO_ARTERIAL, kind: 'paved', highway: 'primary' },
-    { points: DEMO_CROSS, kind: 'paved', highway: 'residential' },
-    { points: DEMO_POLYLINE, kind: 'paved', highway: 'secondary' },
+    {
+      points: DEMO_ARTERIAL,
+      kind: 'paved',
+      highway: 'primary',
+      name: 'China Lake Blvd',
+    },
+    {
+      points: DEMO_CROSS,
+      kind: 'paved',
+      highway: 'residential',
+      name: 'Ridgecrest Blvd',
+    },
+    {
+      points: DEMO_POLYLINE,
+      kind: 'paved',
+      highway: 'secondary',
+      name: 'Demo Loop',
+    },
+    // Unnamed dirt spur — no floating label (cull unnamed ways).
     { points: DEMO_DIRT, kind: 'dirt', highway: 'track' },
   ]
   let streetMeters = 0
