@@ -30,6 +30,7 @@ import {
   followPathSnapSlide,
   type AutopilotFollow,
 } from './autopilot'
+import { isLikelyCrowFlight } from './streetGraph'
 import {
   MAX_SPEED_MPH,
   OFF_ROAD_MAX_SPEED_MPH,
@@ -161,7 +162,9 @@ export function tickDriveBrain(
   if (apToggle) {
     if (next.apOn) {
       next.apOn = false
-    } else if (path.length >= 2) {
+    } else if (path.length >= 2 && !isLikelyCrowFlight(path)) {
+      // LEARNING — never engage AP on geodesic straight-fallback. OSRM spines
+      // and near-car splices have enough vertices / arc to pass this gate.
       next.apOn = true
       next.apTargetMph = Math.max(
         15,
@@ -170,7 +173,7 @@ export function tickDriveBrain(
       next.cruiseOn = false
     }
   }
-  if (reverse || path.length < 2) {
+  if (reverse || path.length < 2 || isLikelyCrowFlight(path)) {
     next.apOn = false
   }
 

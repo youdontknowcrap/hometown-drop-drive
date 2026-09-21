@@ -1,20 +1,22 @@
 /**
- * Loaded-street graph + OSRM→world path alignment (Forge / Joey 2026-09-21).
+ * Loaded-street graph + near-car OSRM splice (Forge / Joey 2026-09-21).
  *
- * PROBLEM: Autopilot used to follow the raw blue OSRM (or straight) polyline
- * while the 3D ribbons are streamed OSM tiles. Those two geometries disagree
- * enough that AP can "drive the blue line" off the asphalt mesh under the tires.
+ * PROBLEM: Autopilot following raw OSRM can drift off streamed asphalt; but
+ * replacing the *entire* OSRM course with a local-tile graph destroyes
+ * long-haul GPS (Ridgecrest → Missouri must stay real highways).
  *
- * ONE PATH TRUTH: build a cheap graph from **active loaded ways**, snap the
- * OSRM/fallback polyline onto those centerlines, and let AP + GPS guidance +
- * the visible blue line all consume the **same** world-XZ path. Re-run when
- * tiles stream in (caller passes fresh ways).
+ * DESIGN (corrected):
+ *   1) Keep the **full OSRM polyline** as the destination spine (blue line /
+ *      GPS / guidance far legs).
+ *   2) Street-snap **only near the car** onto loaded (active+cached) ways.
+ *   3) Splice: near = asphalt centerlines, far ahead = untouched OSRM.
+ *   4) Never publish geodesic straight-fallback as the driven path when a
+ *      prior good OSRM spine (or nearby centerline chase) exists.
+ *   5) Hang-budget: partial align must NOT wipe the OSRM spine mid-drive.
  *
- * Prefer playable solid over perfect map-matching research:
- *   1) Densify the guidance polyline
- *   2) Project each sample onto the nearest loaded centerline (within SNAP_M)
- *   3) Stitch along the same way when possible; short A* hop between ways
- *   4) If nothing is loaded yet, fall back to the raw polyline (still drives)
+ * LEARNING — never publish crow-flight to AP while ways are loaded near the
+ * car. Prefer last successful spliced/OSRM path until a better near snap
+ * finishes under the idle budget.
  */
 
 import type { XzPoint } from './roadMesh'
@@ -27,12 +29,16 @@ const SNAP_MAX_M = 48
 const SAMPLE_SPACING_M = 22
 /** Skip near-duplicate output vertices. */
 const OUT_MIN_SEP_M = 2.5
-/** A* hop budget — keep cheap for per-stream replans. */
+/** A* hop budget — keep cheap for per-stream near-car splices. */
 const ASTAR_MAX_EXPANSIONS = 1_200
-/** Cap densified samples so a long OSRM line can't O(n·segs) freeze the tab. */
-const MAX_ALIGN_SAMPLES = 72
+/** Cap densified samples *inside the near-car bubble* only (far OSRM untouched). */
+const MAX_NEAR_SAMPLES = 48
 /** Default soft wall-clock budget (ms) when callers pass AlignOptions. */
 const DEFAULT_TIME_BUDGET_MS = 6
+/** Street-snap radius around the car (meters) — local tile bubble, not cross-country. */
+const DEFAULT_NEAR_RADIUS_M = 480
+/** Reject hop→snap chords longer than this without an on-graph hop (meters). */
+const MAX_CROW_CHORD_M = 64
 
 export type LoadedWayPoly = {
   points: XzPoint[]
@@ -296,132 +302,379 @@ function dijkstraPoly(
 
 export type AlignOptions = {
   /**
-   * Soft wall-clock budget (ms). When exceeded, remaining samples are copied
-   * raw (no Dijkstra hops) so the tab stays responsive. Callers should also
-   * idle-defer via routeAlignScheduler — budget is a belt, not a license for
-   * sync useMemo on every tile.
+   * Soft wall-clock budget (ms). When exceeded, return the best splice so far
+   * **with the OSRM spine intact** — never wipe far legs with raw crow-flight.
    */
   timeBudgetMs?: number
+  /** Car world X — near-bubble center. Defaults to rawPath[0]. */
+  carX?: number
+  /** Car world Z — near-bubble center. Defaults to rawPath[0]. */
+  carZ?: number
+  /** Street-snap radius (m). Far OSRM beyond this stays untouched. */
+  nearRadiusM?: number
+  /**
+   * True when rawPath is OSRM (road-following). False for Nominatim/straight
+   * fallback — geodesic must not drive AP while ways exist near the car.
+   */
+  rawIsStreetFollowing?: boolean
+}
+
+export type AlignResult = {
+  path: XzPoint[]
+  timedOut: boolean
+  /** Local asphalt snap applied inside the near bubble. */
+  didLocalSnap: boolean
+  /**
+   * Safe to hand AP / guidance / blue line.
+   * LEARNING — never publish crow-flight to AP while ways are loaded near the
+   * car. OSRM spine alone is publishable; straight fallback is not when we
+   * still owe a centerline chase.
+   */
+  publishable: boolean
+  kind: 'osrm-spine' | 'osrm-spliced' | 'fallback-chase' | 'fallback-raw' | 'empty'
+}
+
+function copyPath(path: XzPoint[]): XzPoint[] {
+  return path.map((p) => [p[0], 0, p[2]] as XzPoint)
+}
+
+function pathLenM(path: XzPoint[]): number {
+  let n = 0
+  for (let i = 0; i < path.length - 1; i++) {
+    n += Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][2] - path[i][2])
+  }
+  return n
 }
 
 /**
- * Align a guidance polyline (OSRM / straight fallback, world XZ) onto the
- * loaded street graph. Returns a driven path AP + GPS + guidance share.
+ * True when a polyline is essentially a geodesic (straight fallback / 2-point).
+ * OSRM road courses have many vertices and arc length >> crow — keep those.
+ */
+export function isLikelyCrowFlight(path: XzPoint[]): boolean {
+  if (path.length < 2) return true
+  if (path.length > 8) return false
+  const crow = Math.hypot(
+    path[path.length - 1][0] - path[0][0],
+    path[path.length - 1][2] - path[0][2],
+  )
+  const len = pathLenM(path)
+  return len <= crow * 1.06 + 8
+}
+
+/**
+ * Greedy centerline chase toward a goal — used when raw is straight-fallback
+ * but loaded ways exist near the car (AP must stay on asphalt, not geodesic).
+ */
+export function chaseCenterlineToward(
+  ways: LoadedWayPoly[],
+  fromX: number,
+  fromZ: number,
+  toX: number,
+  toZ: number,
+  options: { timeBudgetMs?: number; maxLenM?: number } = {},
+): XzPoint[] {
+  const usable = ways.filter((w) => w.points.length >= 2)
+  if (usable.length === 0) return []
+  const t0 = performance.now()
+  const budget = options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS
+  const maxLen = options.maxLenM ?? 2_400
+  const graph = buildStreetGraph(usable)
+  if (graph.segs.length === 0) return []
+  const start = snapToGraph(graph, fromX, fromZ)
+  if (!start) return []
+  const out: XzPoint[] = [[start.x, 0, start.z]]
+  let nodeId = start.nodeId
+  let guard = 0
+  let travelled = 0
+  while (guard++ < 400) {
+    if (performance.now() - t0 >= budget) break
+    const goalDist = Math.hypot(toX - out[out.length - 1][0], toZ - out[out.length - 1][2])
+    if (goalDist < 28) break
+    if (travelled > maxLen) break
+    const edges = graph.adj.get(nodeId)
+    if (!edges || edges.length === 0) break
+    let best: GraphEdge | null = null
+    let bestScore = Infinity
+    for (const e of edges) {
+      const end = e.poly[e.poly.length - 1]
+      const d = Math.hypot(toX - end[0], toZ - end[2])
+      // Prefer edges that reduce remaining crow-flight; tiny length penalty.
+      const score = d + e.length * 0.05
+      if (score < bestScore) {
+        bestScore = score
+        best = e
+      }
+    }
+    if (!best) break
+    const end = best.poly[best.poly.length - 1]
+    // Avoid oscillating on the same node.
+    if (best.to === nodeId) break
+    for (let i = 1; i < best.poly.length; i++) {
+      pushUnique(out, best.poly[i][0], best.poly[i][2])
+    }
+    travelled += best.length
+    nodeId = best.to
+    if (Math.hypot(toX - end[0], toZ - end[2]) >= goalDist - 0.5) {
+      // Not making progress toward dest — stop (incomplete component).
+      break
+    }
+  }
+  return out.length >= 2 ? out : []
+}
+
+/**
+ * Align / splice a guidance polyline onto loaded streets **near the car only**.
  *
- * If the graph is empty / too sparse, returns a copy of `rawPath` so the toy
- * still shows a blue line and AP can follow something.
+ * Returns an AlignResult. Callers (routeAlignScheduler) must not publish
+ * non-publishable results over a prior good OSRM spine.
  *
  * LEARNING — main-thread budget:
- *   Snap is O(samples × segs). A fat tile ring + long OSRM line can hitch for
- *   tens–hundreds of ms if run in the React commit that also applies Road
- *   meshes → “Page Unresponsive”. Prefer createRouteAlignScheduler; pass
- *   timeBudgetMs as a hard soft-cap when you must call this directly.
+ *   Only the near-car bubble is densified + snapped. Cross-country OSRM stays
+ *   a cheap copy. Prefer createRouteAlignScheduler; pass timeBudgetMs.
  */
 export function alignRouteToLoadedWays(
   rawPath: XzPoint[],
   ways: LoadedWayPoly[],
   options: AlignOptions = {},
-): XzPoint[] {
-  if (rawPath.length < 2) return rawPath.slice()
+): AlignResult {
+  if (rawPath.length < 2) {
+    return {
+      path: [],
+      timedOut: false,
+      didLocalSnap: false,
+      publishable: false,
+      kind: 'empty',
+    }
+  }
 
+  // Explicit flag wins; otherwise infer from vertex density (OSRM vs 2-point).
+  const isOsrmLike =
+    options.rawIsStreetFollowing === true ||
+    (options.rawIsStreetFollowing !== false && !isLikelyCrowFlight(rawPath))
+
+  const spine = copyPath(rawPath)
   const usable = ways.filter((w) => w.points.length >= 2)
-  if (usable.length === 0) return rawPath.map((p) => [p[0], 0, p[2]] as XzPoint)
+
+  if (usable.length === 0) {
+    return {
+      path: spine,
+      timedOut: false,
+      didLocalSnap: false,
+      publishable: isOsrmLike,
+      kind: isOsrmLike ? 'osrm-spine' : 'fallback-raw',
+    }
+  }
 
   const t0 = performance.now()
   const budget = options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS
   const overBudget = () => performance.now() - t0 >= budget
+  const nearR = options.nearRadiusM ?? DEFAULT_NEAR_RADIUS_M
+  const carX = options.carX ?? rawPath[0][0]
+  const carZ = options.carZ ?? rawPath[0][2]
 
   const graph = buildStreetGraph(usable)
   if (graph.segs.length === 0) {
-    return rawPath.map((p) => [p[0], 0, p[2]] as XzPoint)
+    return {
+      path: spine,
+      timedOut: false,
+      didLocalSnap: false,
+      publishable: isOsrmLike,
+      kind: isOsrmLike ? 'osrm-spine' : 'fallback-raw',
+    }
   }
   if (overBudget()) {
-    return rawPath.map((p) => [p[0], 0, p[2]] as XzPoint)
+    // Graph ate the budget — keep full OSRM spine (never crow-flight overwrite).
+    return {
+      path: spine,
+      timedOut: true,
+      didLocalSnap: false,
+      publishable: isOsrmLike,
+      kind: isOsrmLike ? 'osrm-spine' : 'fallback-raw',
+    }
   }
 
-  let samples = densifyPolyline(rawPath, SAMPLE_SPACING_M)
-  if (samples.length > MAX_ALIGN_SAMPLES) {
-    // Keep endpoints; stride the middle so long routes stay cheap.
-    const kept: XzPoint[] = [samples[0]]
-    const step = Math.ceil(samples.length / MAX_ALIGN_SAMPLES)
-    for (let i = step; i < samples.length - 1; i += step) {
-      kept.push(samples[i])
+  // Straight fallback + ways near car → centerline chase (not geodesic AP).
+  if (!isOsrmLike) {
+    const chase = chaseCenterlineToward(
+      usable,
+      carX,
+      carZ,
+      rawPath[rawPath.length - 1][0],
+      rawPath[rawPath.length - 1][2],
+      { timeBudgetMs: Math.max(1, budget - (performance.now() - t0)) },
+    )
+    if (chase.length >= 2) {
+      return {
+        path: chase,
+        timedOut: overBudget(),
+        didLocalSnap: true,
+        publishable: true,
+        kind: 'fallback-chase',
+      }
     }
+    return {
+      path: spine,
+      timedOut: overBudget(),
+      didLocalSnap: false,
+      publishable: false,
+      kind: 'fallback-raw',
+    }
+  }
+
+  // --- OSRM spine: snap only vertices inside the near-car bubble ---
+  // Find inclusive index range of raw vertices near the car.
+  let i0 = -1
+  let i1 = -1
+  for (let i = 0; i < rawPath.length; i++) {
+    const d = Math.hypot(rawPath[i][0] - carX, rawPath[i][2] - carZ)
+    if (d <= nearR) {
+      if (i0 < 0) i0 = i
+      i1 = i
+    }
+  }
+  // Always include a small window around the closest vertex so AP has asphalt
+  // even when the car sits slightly off the polyline.
+  if (i0 < 0) {
+    let bestI = 0
+    let bestD = Infinity
+    for (let i = 0; i < rawPath.length; i++) {
+      const d = Math.hypot(rawPath[i][0] - carX, rawPath[i][2] - carZ)
+      if (d < bestD) {
+        bestD = d
+        bestI = i
+      }
+    }
+    if (bestD > nearR * 1.5) {
+      // Car far from route (rare) — keep pure OSRM.
+      return {
+        path: spine,
+        timedOut: false,
+        didLocalSnap: false,
+        publishable: true,
+        kind: 'osrm-spine',
+      }
+    }
+    i0 = Math.max(0, bestI - 1)
+    i1 = Math.min(rawPath.length - 1, bestI + 1)
+  }
+
+  // Expand one vertex so splice seams are smooth.
+  i0 = Math.max(0, i0 - 1)
+  i1 = Math.min(rawPath.length - 1, i1 + 1)
+
+  const nearRaw = rawPath.slice(i0, i1 + 1)
+  let samples = densifyPolyline(nearRaw, SAMPLE_SPACING_M)
+  if (samples.length > MAX_NEAR_SAMPLES) {
+    const kept: XzPoint[] = [samples[0]]
+    const step = Math.ceil(samples.length / MAX_NEAR_SAMPLES)
+    for (let i = step; i < samples.length - 1; i += step) kept.push(samples[i])
     kept.push(samples[samples.length - 1])
     samples = kept
   }
 
-  const out: XzPoint[] = []
+  const snapped: XzPoint[] = []
   let lastNodeId: string | null = null
+  let timedOut = false
+  let snapHits = 0
 
   for (let si = 0; si < samples.length; si++) {
-    const s = samples[si]
     if (overBudget()) {
-      // Bail: append remaining densified points raw — still a driveable line.
-      for (let j = si; j < samples.length; j++) {
-        pushUnique(out, samples[j][0], samples[j][2])
-      }
-      lastNodeId = null
+      timedOut = true
       break
     }
-
+    const s = samples[si]
     const hit = snapToGraph(graph, s[0], s[2])
     if (!hit) {
-      // Still loading under this sample — keep raw so the corridor progresses.
-      pushUnique(out, s[0], s[2])
+      // Hole in loaded ways — keep OSRM sample (road-following), not a skip gap.
+      pushUnique(snapped, s[0], s[2])
       continue
     }
+    snapHits++
 
     if (lastNodeId && lastNodeId !== hit.nodeId && !overBudget()) {
-      // Prefer a short on-graph hop so we stay on centerlines between snaps.
       const hop = dijkstraPoly(graph, lastNodeId, hit.nodeId)
       if (hop && hop.length > 0) {
-        // Only accept hops that aren't absurd vs crow-flight (avoid city tours).
         let hopLen = 0
-        let px = out.length ? out[out.length - 1][0] : hit.x
-        let pz = out.length ? out[out.length - 1][2] : hit.z
+        let px = snapped.length ? snapped[snapped.length - 1][0] : hit.x
+        let pz = snapped.length ? snapped[snapped.length - 1][2] : hit.z
         for (const p of hop) {
           hopLen += Math.hypot(p[0] - px, p[2] - pz)
           px = p[0]
           pz = p[2]
         }
         const crow = Math.hypot(
-          hit.x - (out.at(-1)?.[0] ?? hit.x),
-          hit.z - (out.at(-1)?.[2] ?? hit.z),
+          hit.x - (snapped.at(-1)?.[0] ?? hit.x),
+          hit.z - (snapped.at(-1)?.[2] ?? hit.z),
         )
         if (hopLen <= Math.max(80, crow * 2.8 + 40)) {
-          for (const p of hop) pushUnique(out, p[0], p[2])
+          for (const p of hop) pushUnique(snapped, p[0], p[2])
+        } else if (crow > MAX_CROW_CHORD_M) {
+          // LEARNING — hop rejected + long crow = would publish a diagonal
+          // cross-lots chord. Keep the OSRM sample instead of hit↔hit crow.
+          pushUnique(snapped, s[0], s[2])
+          lastNodeId = hit.nodeId
+          continue
+        }
+      } else {
+        const crow = Math.hypot(
+          hit.x - (snapped.at(-1)?.[0] ?? hit.x),
+          hit.z - (snapped.at(-1)?.[2] ?? hit.z),
+        )
+        if (crow > MAX_CROW_CHORD_M) {
+          pushUnique(snapped, s[0], s[2])
+          lastNodeId = hit.nodeId
+          continue
         }
       }
     }
 
-    pushUnique(out, hit.x, hit.z)
+    pushUnique(snapped, hit.x, hit.z)
     lastNodeId = hit.nodeId
   }
 
-  // Ensure destination end is represented (snap last raw point if possible).
-  const end = rawPath[rawPath.length - 1]
-  if (!overBudget()) {
-    const endHit = snapToGraph(graph, end[0], end[2], SNAP_MAX_M * 1.4)
-    if (endHit) {
-      if (lastNodeId && lastNodeId !== endHit.nodeId) {
-        const hop = dijkstraPoly(graph, lastNodeId, endHit.nodeId)
-        if (hop) {
-          for (const p of hop) pushUnique(out, p[0], p[2])
-        }
-      }
-      pushUnique(out, endHit.x, endHit.z)
-    } else {
-      pushUnique(out, end[0], end[2])
+  if (snapped.length < 2 || snapHits === 0) {
+    return {
+      path: spine,
+      timedOut,
+      didLocalSnap: false,
+      publishable: true,
+      kind: 'osrm-spine',
     }
-  } else {
-    pushUnique(out, end[0], end[2])
   }
 
-  if (out.length < 2) {
-    return rawPath.map((p) => [p[0], 0, p[2]] as XzPoint)
+  // Splice snapped near segment into the full OSRM spine.
+  const out: XzPoint[] = []
+  for (let i = 0; i < i0; i++) pushUnique(out, rawPath[i][0], rawPath[i][2])
+  for (const p of snapped) pushUnique(out, p[0], p[2])
+  for (let i = i1 + 1; i < rawPath.length; i++) {
+    pushUnique(out, rawPath[i][0], rawPath[i][2])
   }
-  return out
+  if (out.length < 2) {
+    return {
+      path: spine,
+      timedOut,
+      didLocalSnap: false,
+      publishable: true,
+      kind: 'osrm-spine',
+    }
+  }
+
+  return {
+    path: out,
+    timedOut,
+    didLocalSnap: true,
+    publishable: true,
+    kind: 'osrm-spliced',
+  }
+}
+
+/** @deprecated Prefer AlignResult from alignRouteToLoadedWays. */
+export function alignRoutePathOnly(
+  rawPath: XzPoint[],
+  ways: LoadedWayPoly[],
+  options: AlignOptions = {},
+): XzPoint[] {
+  return alignRouteToLoadedWays(rawPath, ways, options).path
 }
 
 /**

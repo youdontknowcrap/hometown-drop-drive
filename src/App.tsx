@@ -248,11 +248,11 @@ export default function App() {
     reroutingRef.current = false
   }, [])
 
+  /**
+   * Scene / GPS dial ways — HARD GPS RULE: active (mounted) only.
+   * Keep highway/name so the dial can filter by zoom + label turns.
+   */
   const localWays = useMemo(
-    // HARD GPS RULE: only active (Scene-mounted) ways — never prefetch cache.
-    // Keep highway/name so the dial can filter by zoom + label turns.
-    // Depend on origin lat/lng (not object identity) so stream emits that only
-    // refresh wayCount/message don't rebuild polylines + fingerprint.
     () =>
       stream.activeWays.map((w) => ({
         points: polylineToLocal(w.points, world.origin),
@@ -263,7 +263,22 @@ export default function App() {
     [stream.activeWays, world.origin.lat, world.origin.lng],
   )
 
-  /** Raw OSRM / straight polyline in world XZ (before loaded-street snap). */
+  /**
+   * Align graph ways — active + cached (fetched) tiles.
+   * LEARNING: thin active ring alone made near-car snap jump gaps with
+   * crow-flight chords. Cached corridor ways feed Dijkstra without painting
+   * prefetch ghosts on the GPS dial (still activeWays only there).
+   */
+  const alignLocalWays = useMemo(
+    () =>
+      stream.alignWays.map((w) => ({
+        points: polylineToLocal(w.points, world.origin),
+      })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- origin lat/lng
+    [stream.alignWays, world.origin.lat, world.origin.lng],
+  )
+
+  /** Raw OSRM / straight polyline in world XZ (destination spine before near snap). */
   const routeLocalRaw = useMemo(() => {
     if (!nav) return [] as Array<[number, number, number]>
     return polylineToLocal(nav.polyline, world.origin)
@@ -271,19 +286,24 @@ export default function App() {
   }, [nav, world.origin.lat, world.origin.lng])
 
   /**
-   * ONE PATH TRUTH (Forge): driven route = OSRM snapped onto loaded active
-   * way centerlines. AP, GPS blue line, turn guidance, and off-course all
-   * share this polyline. Replans when tiles stream (fingerprint changes).
+   * Driven path = **full OSRM spine** + near-car street splice.
    *
-   * LEARNING — never sync-align in useMemo on fingerprint:
-   *   buildStreetGraph + snap + Dijkstra on every tile froze the main thread
-   *   (Chrome “Page Unresponsive”) and hitch-remounted Canvas Suspense →
-   *   speed→0 + FollowCam intro. Paint raw immediately; coalesce + idle-align
-   *   via createRouteAlignScheduler (time-budgeted). Does NOT remount Car.
+   * LEARNING (Joey long-haul): Ridgecrest → Missouri must keep the OSRM
+   * highway course on the blue GPS line. Replacing the entire polyline with
+   * a local-tile graph path destroyed cross-country routing. Hang-budget
+   * early-bail then published crow-flight tails → AP aimed diagonal.
+   *
+   * Correct publish rules:
+   *   1) New dest → paint full OSRM immediately (long-haul GPS).
+   *   2) Idle near-car splice onto active+cached ways (asphalt under tires).
+   *   3) Far ahead stays untouched OSRM — never align-only graph path.
+   *   4) Never publish straight-fallback geodesic to AP when ways exist.
+   *   5) Budget timeout keeps last good OSRM/spliced spine (no mid-drive wipe).
+   * Does NOT remount Car (path prop only; remount guards from hang fix stay).
    */
   const waysFingerprint = useMemo(
-    () => loadedWaysFingerprint(localWays),
-    [localWays],
+    () => loadedWaysFingerprint(alignLocalWays),
+    [alignLocalWays],
   )
 
   const [routeLocal, setRouteLocal] = useState<
@@ -292,8 +312,8 @@ export default function App() {
   const alignSchedulerRef = useRef<ReturnType<
     typeof createRouteAlignScheduler
   > | null>(null)
-  const localWaysRef = useRef(localWays)
-  localWaysRef.current = localWays
+  const alignWaysRef = useRef(alignLocalWays)
+  alignWaysRef.current = alignLocalWays
 
   useEffect(() => {
     const sched = createRouteAlignScheduler({
@@ -309,7 +329,7 @@ export default function App() {
 
   const navKey = useMemo(() => {
     if (!nav) return 'none'
-    return `${nav.destination.lat.toFixed(5)},${nav.destination.lng.toFixed(5)},${nav.polyline.length}`
+    return `${nav.destination.lat.toFixed(5)},${nav.destination.lng.toFixed(5)},${nav.polyline.length},${nav.source}`
   }, [nav])
   const prevNavKeyRef = useRef(navKey)
 
@@ -323,23 +343,35 @@ export default function App() {
     const fp = `${navKey}|${waysFingerprint}`
     const navChanged = prevNavKeyRef.current !== navKey
     prevNavKeyRef.current = navKey
+    const osrm = nav?.source === 'osrm'
+    const waysNear = alignWaysRef.current.length > 0
     alignSchedulerRef.current?.schedule({
       rawPath: routeLocalRaw,
-      ways: localWaysRef.current,
+      ways: alignWaysRef.current,
       fingerprint: fp,
-      // New destination only — stream replans keep prior aligned until idle.
-      onRaw: navChanged
-        ? (raw) => {
-            setRouteLocal(raw)
-            navLocalRef.current = raw
-          }
-        : undefined,
-      onAligned: (aligned) => {
+      carX: carPose.ready ? carPose.x : routeLocalRaw[0][0],
+      carZ: carPose.ready ? carPose.z : routeLocalRaw[0][2],
+      rawIsStreetFollowing: osrm,
+      // New destination: paint full OSRM spine immediately (long-haul GPS).
+      // Straight fallback: do NOT paint geodesic when ways exist — wait for
+      // centerline chase / keep prior path (never crow-flight to AP).
+      onRaw:
+        navChanged && (osrm || !waysNear)
+          ? (raw) => {
+              setRouteLocal(raw)
+              navLocalRef.current = raw
+            }
+          : undefined,
+      onAligned: (aligned, meta) => {
+        if (!meta.publishable && aligned.length < 2) return
+        // ONE published polyline: Scene blue RouteLine + GpsDash + AP/guidance
+        // all read routeLocal. Near-car splice redraws the blue line too —
+        // never AP-on-snapped / blue-on-raw split.
         setRouteLocal(aligned)
         navLocalRef.current = aligned
       },
     })
-  }, [routeLocalRaw, waysFingerprint, navKey])
+  }, [routeLocalRaw, waysFingerprint, navKey, nav?.source])
 
   // Debounced off-course → OSRM reroute from the car to the same destination.
   useEffect(() => {

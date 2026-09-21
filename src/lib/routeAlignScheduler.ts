@@ -1,23 +1,30 @@
 /**
- * Idle-deferred / coalesced route align (Forge remount + Page Unresponsive fix).
+ * Idle-deferred / coalesced near-car route splice (Forge remount + hang fix).
  *
  * LEARNING — why not useMemo(alignRouteToLoadedWays)?
- *   Arch snap runs buildStreetGraph + densify + per-sample snap + Dijkstra hops.
+ *   Even near-bubble snap runs buildStreetGraph + densify + Dijkstra hops.
  *   Doing that synchronously on every ways fingerprint (tile stream) blocks the
  *   main thread in the same tick as Road mesh apply → Chrome “Page Unresponsive”,
  *   rAF stalls, and classic remount symptoms (speed blip / camera intro) when
  *   Canvas Suspense recovers from a long freeze.
  *
+ * LEARNING — never publish crow-flight to AP while ways loaded:
+ *   Hang-budget early-bail used to append raw densified points (or return a
+ *   straight fallback) and `onAligned` swapped that into routeLocal mid-drive.
+ *   AP look-ahead then aimed along a geodesic → diagonal cross-lots.
  *   This scheduler:
- *     1) Paints raw OSRM immediately (blue line + AP keep working).
+ *     1) Paints **full OSRM** immediately on new destination (long-haul spine).
  *     2) Coalesces fingerprint storms (latest wins).
- *     3) Runs align after rAF + idle/timeout so mesh apply paints first.
- *     4) Passes a soft time budget so one align never monopolizes the tab.
+ *     3) Idle-runs near-car splice under a soft time budget.
+ *     4) Publishes only `publishable` results; keeps last good OSRM/spliced
+ *        path when align times out or returns geodesic junk.
+ *     5) Does NOT replace the entire OSRM course with a local-only graph path.
  */
 
 import {
   alignRouteToLoadedWays,
   type AlignOptions,
+  type AlignResult,
   type LoadedWayPoly,
 } from './streetGraph'
 import type { XzPoint } from './roadMesh'
@@ -28,12 +35,19 @@ export type RouteAlignScheduler = {
     rawPath: XzPoint[]
     ways: LoadedWayPoly[]
     fingerprint: string
+    /** Car XZ for near-bubble center (live pose). */
+    carX?: number
+    carZ?: number
+    /** True when rawPath is OSRM road-following (not straight fallback). */
+    rawIsStreetFollowing?: boolean
     /**
-     * Optional: paint raw immediately (new destination). Omit on fingerprint-
-     * only replans so AP keeps the previous aligned path until idle finishes.
+     * Optional: paint raw immediately (new destination). OSRM spine only —
+     * omit on fingerprint-only replans so AP keeps the previous path until
+     * idle finishes. Caller should skip this for straight-fallback when ways
+     * exist near the car.
      */
     onRaw?: (raw: XzPoint[]) => void
-    onAligned: (aligned: XzPoint[], fingerprint: string) => void
+    onAligned: (aligned: XzPoint[], meta: AlignResult) => void
   }) => void
   /** Cancel pending work (Drop / clear destination / unmount). */
   dispose: () => void
@@ -55,7 +69,10 @@ export function createRouteAlignScheduler(
     rawPath: XzPoint[]
     ways: LoadedWayPoly[]
     fingerprint: string
-    onAligned: (aligned: XzPoint[], fingerprint: string) => void
+    carX?: number
+    carZ?: number
+    rawIsStreetFollowing?: boolean
+    onAligned: (aligned: XzPoint[], meta: AlignResult) => void
   } | null = null
   let coalesceTimer = 0
   let raf = 0
@@ -63,7 +80,10 @@ export function createRouteAlignScheduler(
   let timeoutId = 0
   let disposed = false
   let gen = 0
-  let lastFp = ''
+  /** Fingerprint of last *published* splice (not merely attempted). */
+  let lastPublishedFp = ''
+  /** Last publishable path — prefer over geodesic / timed-out junk. */
+  let lastGood: XzPoint[] | null = null
 
   const clearArms = () => {
     if (coalesceTimer) {
@@ -84,30 +104,76 @@ export function createRouteAlignScheduler(
     }
   }
 
+  const armIdle = (fn: () => void) => {
+    if (disposed) return
+    if (typeof requestIdleCallback === 'function') {
+      idleId = requestIdleCallback(() => fn(), { timeout: 280 })
+    } else {
+      timeoutId = window.setTimeout(fn, 0)
+    }
+  }
+
   const runAlign = () => {
     raf = 0
     idleId = 0
     timeoutId = 0
     if (disposed || !pending) return
     const job = pending
-    pending = null
-    if (job.fingerprint === lastFp) return
+    // Keep pending when timedOut so we can resume next idle on same fp.
     const myGen = ++gen
-    const alignOpts: AlignOptions = { timeBudgetMs }
-    const aligned = alignRouteToLoadedWays(job.rawPath, job.ways, alignOpts)
-    if (disposed || myGen !== gen) return
-    lastFp = job.fingerprint
-    job.onAligned(aligned, job.fingerprint)
-  }
-
-  const armIdle = () => {
-    if (disposed) return
-    // After paint: prefer idle; fall back to a short timeout so AP still snaps.
-    if (typeof requestIdleCallback === 'function') {
-      idleId = requestIdleCallback(() => runAlign(), { timeout: 280 })
-    } else {
-      timeoutId = window.setTimeout(runAlign, 0)
+    const alignOpts: AlignOptions = {
+      timeBudgetMs,
+      carX: job.carX,
+      carZ: job.carZ,
+      rawIsStreetFollowing: job.rawIsStreetFollowing,
     }
+    const result = alignRouteToLoadedWays(job.rawPath, job.ways, alignOpts)
+    if (disposed || myGen !== gen) return
+
+    if (result.publishable && result.path.length >= 2) {
+      lastGood = result.path.map((p) => [p[0], 0, p[2]] as XzPoint)
+      job.onAligned(lastGood, result)
+      if (!result.timedOut) {
+        lastPublishedFp = job.fingerprint
+        pending = null
+      } else {
+        // Partial near-snap under budget — keep OSRM spine publish, resume
+        // idle for a fuller splice without marking fp done forever.
+        pending = job
+        armIdle(() => {
+          raf = requestAnimationFrame(() => {
+            raf = 0
+            runAlign()
+          })
+        })
+      }
+      return
+    }
+
+    // Not publishable (e.g. straight fallback, empty chase). Keep last good
+    // if we have one; otherwise surface nothing new (caller keeps prior UI).
+    if (lastGood && lastGood.length >= 2) {
+      job.onAligned(lastGood, {
+        ...result,
+        path: lastGood,
+        publishable: true,
+        kind: result.kind === 'fallback-raw' ? 'fallback-chase' : result.kind,
+      })
+    }
+    // Only resume on soft timeout — fingerprint change re-schedules when
+    // more ways stream in. Do not spin forever on fallback-raw.
+    if (result.timedOut) {
+      pending = job
+      armIdle(() => {
+        raf = requestAnimationFrame(() => {
+          raf = 0
+          runAlign()
+        })
+      })
+      return
+    }
+    pending = null
+    lastPublishedFp = job.fingerprint
   }
 
   return {
@@ -120,24 +186,40 @@ export function createRouteAlignScheduler(
       if (job.rawPath.length < 2) {
         clearArms()
         pending = null
-        lastFp = ''
-        job.onAligned([], '')
+        lastPublishedFp = ''
+        lastGood = null
+        job.onAligned([], {
+          path: [],
+          timedOut: false,
+          didLocalSnap: false,
+          publishable: false,
+          kind: 'empty',
+        })
         return
       }
 
-      if (job.fingerprint === lastFp && pending == null) {
-        // Already aligned this geometry — skip redundant graph work.
+      if (job.fingerprint === lastPublishedFp && pending == null) {
+        // Already published a complete splice for this geometry.
         return
       }
 
-      // Seed raw only when asked (new destination) — fingerprint-only replans
-      // keep the previous aligned path until the idle job finishes (no AP thrash).
+      // New destination / OSRM spine: paint full course immediately so
+      // long-haul GPS (cross-country highways) never waits on local tiles.
       if (job.onRaw) job.onRaw(rawCopy)
+
+      // Nav change (different raw) — reset lastGood so we don't keep an old trip.
+      if (job.onRaw) {
+        lastGood = job.rawIsStreetFollowing === false ? null : rawCopy
+        lastPublishedFp = ''
+      }
 
       pending = {
         rawPath: job.rawPath,
         ways: job.ways,
         fingerprint: job.fingerprint,
+        carX: job.carX,
+        carZ: job.carZ,
+        rawIsStreetFollowing: job.rawIsStreetFollowing,
         onAligned: job.onAligned,
       }
       // Coalesce: restart quiet window so tile storms become one align.
@@ -158,13 +240,14 @@ export function createRouteAlignScheduler(
         coalesceTimer = 0
         raf = requestAnimationFrame(() => {
           raf = 0
-          armIdle()
+          armIdle(runAlign)
         })
       }, coalesceMs)
     },
     dispose() {
       disposed = true
       pending = null
+      lastGood = null
       clearArms()
     },
   }
