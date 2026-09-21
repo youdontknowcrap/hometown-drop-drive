@@ -51,6 +51,11 @@ export type StreetStreamingState = {
   streaming: boolean
   tileMath: string
   busy: boolean
+  /** Teaching: next Overpass tile in priority queue. */
+  nextQueueKey: string | null
+  queueDepth: number
+  /** 0 = crawl circle, 1 = highway corridor. */
+  corridorBlend: number
 }
 
 function worldFromStreamer(streamer: StreetTileStreamer): StreetWorld {
@@ -81,6 +86,9 @@ function stateFromStreamer(streamer: StreetTileStreamer): Omit<StreetStreamingSt
     streamVersion: s.version,
     streaming: true,
     tileMath: tileMathBlurb(s.origin.lat),
+    nextQueueKey: s.nextQueueKey,
+    queueDepth: s.queueDepth,
+    corridorBlend: s.corridorBlend,
   }
 }
 
@@ -106,15 +114,29 @@ const IDLE: StreetStreamingState = {
   streaming: false,
   tileMath: '',
   busy: false,
+  nextQueueKey: null,
+  queueDepth: 0,
+  corridorBlend: 0,
 }
 
 /**
  * Drop → start stream; while driving, updateCar from carPose.
  * Consumers MUST feed `activeWays` to both Scene and GpsDash.
  */
-export function useStreetStreaming(dropAddress: string, dropNonce: number): StreetStreamingState {
+export function useStreetStreaming(
+  dropAddress: string,
+  dropNonce: number,
+  buildingsEnabled = true,
+): StreetStreamingState {
   const [state, setState] = useState<StreetStreamingState>({ ...IDLE, busy: true })
   const streamerRef = useRef<StreetTileStreamer | null>(null)
+  const buildingsEnabledRef = useRef(buildingsEnabled)
+  buildingsEnabledRef.current = buildingsEnabled
+
+  // Push HUD Buildings toggle into the live streamer (skip/resume Overpass).
+  useEffect(() => {
+    streamerRef.current?.setBuildingsEnabled(buildingsEnabled)
+  }, [buildingsEnabled])
 
   useEffect(() => {
     let cancelled = false
@@ -136,6 +158,7 @@ export function useStreetStreaming(dropAddress: string, dropNonce: number): Stre
           return
         }
         streamerRef.current = streamer
+        streamer.setBuildingsEnabled(buildingsEnabledRef.current)
         const next = stateFromStreamer(streamer)
         // Keep geocode label / initial message from startStreetStream.
         next.world = {
@@ -155,8 +178,8 @@ export function useStreetStreaming(dropAddress: string, dropNonce: number): Stre
           })
         })
 
-        // 4 Hz is enough for 1 km tiles; look-ahead uses yaw + speed so the
-        // next ring activates before soft-clamp meets a continuing road.
+        // 4 Hz is enough for 1 km tiles; yaw + speedMph blend circle↔corridor
+        // so the next tiles activate before soft-clamp meets a continuing road.
         poll = window.setInterval(() => {
           if (cancelled || !streamerRef.current) return
           if (!carPose.ready) return

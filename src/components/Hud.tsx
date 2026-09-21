@@ -34,6 +34,11 @@ type HudProps = {
   tilesMessage?: string
   /** Live streamer status (loading / error). */
   streamMessage?: string
+  /** Teaching: priority-queue head + depth (load order ≡ paint cue). */
+  queueMessage?: string
+  /** Buildings stream ON/OFF (persisted by App). */
+  buildingsOn: boolean
+  onBuildingsOn: (on: boolean) => void
   /** Live or preset weather summary. */
   weatherSummary?: string
   weatherPreset: WeatherPreset
@@ -110,6 +115,9 @@ export function Hud({
   buildingsMessage,
   tilesMessage,
   streamMessage,
+  queueMessage,
+  buildingsOn,
+  onBuildingsOn,
   weatherSummary,
   weatherPreset,
   onWeatherPreset,
@@ -308,6 +316,14 @@ export function Hud({
               {buildingsMessage}
             </p>
           ) : null}
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={buildingsOn}
+              onChange={(e) => onBuildingsOn(e.target.checked)}
+            />
+            <span>Buildings {buildingsOn ? 'ON' : 'OFF'}</span>
+          </label>
           {tilesMessage ? (
             <p className="hud-status" role="status">
               {tilesMessage}
@@ -316,6 +332,11 @@ export function Hud({
           {streamMessage ? (
             <p className="hud-status" role="status">
               {streamMessage}
+            </p>
+          ) : null}
+          {queueMessage ? (
+            <p className="hud-status" role="status">
+              {queueMessage}
             </p>
           ) : null}
           {weatherSummary ? (

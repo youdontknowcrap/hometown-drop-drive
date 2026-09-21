@@ -64,7 +64,7 @@ Speedo shows **true mph** plus an optional **meters-last-second** sanity line (`
 
 ## Streaming + worker load
 
-**Fast Drop:** paint the **center ~1 km tile** first (Overpass ways on the **main thread** — network-bound, so a worker cannot speed it up). `busy` clears when center ways exist; the car is driveable ASAP. Neighbors fill **serially** (`MAX_IN_FLIGHT=1`) under a frame-budgeted apply coordinator — no 3×3 burst / CPU spike. Buildings and far elev are deferred after first paint.
+**Fast Drop:** paint the **center ~1 km tile** first (Overpass ways on the **main thread** — network-bound, so a worker cannot speed it up). `busy` clears when center ways exist; the car is driveable ASAP. Neighbors fill **serially** (`MAX_IN_FLIGHT=1`) under a frame-budgeted apply coordinator — no 3×3 burst / CPU spike. Buildings and far elev are deferred after first paint. While driving, fetch shape blends circle↔corridor by speed; queue order is forward-biased.
 
 **Worker role:** Terrarium PNG → Float32 elev decode only (`tileLoader.worker.ts`). Overpass ways/buildings stay main-thread async. Tile stream must not remount Car / FollowCam / Scene (`spawnKey` = Drop nonce only; `VERTICAL_EXAGGERATION` = 1).
 
@@ -215,9 +215,25 @@ tz = floor(localZ / TILE_M)
 
 At Drop latitude φ: `Δlat ≈ TILE_M / 111320`, `Δlng ≈ TILE_M / (111320·cos φ)`.
 
-- **Active ring = 1** → 3×3 tiles live in Scene **and** GpsDash (~3 km across)
-- **Prefetch ring = 2** → outer ring may download into cache only
-- Leaving a tile farther than the prefetch ring **unloads** it from both world and dial
+- **Active ring = 1** → crawl baseline: 3×3 tiles live in Scene **and** GpsDash
+- **Prefetch ring = 2** → outer shell may download into cache only
+- Leaving a tile outside the prefetch want-set **unloads** it from both world and dial
+
+### Variable fetch shape (Joey)
+
+`updateCar` blends by `|speedMph|` (see `SPEED_CIRCLE_MPH` ≈ 28, `SPEED_CORRIDOR_MPH` ≈ 58 in `streetTiles.ts`):
+
+| Speed | Shape | Look-ahead |
+| --- | --- | --- |
+| Crawl (&lt; ~28 mph) | Circular 3×3 around the car | ~80 m (car-centered) |
+| Highway (≥ ~58 mph) | Thin longer corridor along heading | ~1600 m |
+| Between | Lerp look-ahead + lateral half-width | interpolated |
+
+Queue priority sorts **forward / center before side / behind** so `MAX_IN_FLIGHT=1` still fetches what paints next (load order matches render cue). HUD shows fetch shape + next tile key + queue depth.
+
+### Buildings toggle
+
+HUD **Buildings ON/OFF** (persisted `localStorage`). OFF skips building Overpass fetches and clears Scene boxes so streets + elev get the bandwidth; ON resumes streaming for active tiles. Default ON.
 
 ### Hard GPS rule (Joey lock)
 
@@ -241,6 +257,8 @@ data still triggers the next tile (world + then GPS).
 ### HUD
 
 `Tiles: N loaded · streaming` — live active tile count.
+`Fetch: circle|corridor · next tx,tz · queue N` — teaching line for priority queue.
+**Buildings ON/OFF** — A/B load without buildings competing for Overpass/CPU.
 
 See `src/lib/streetTiles.ts` (math + queue) and `src/hooks/useStreetStreaming.ts`.
 

@@ -54,6 +54,26 @@ export default function App() {
   const [weatherPreset, setWeatherPreset] = useState<WeatherPreset>('auto')
   const [liveWeather, setLiveWeather] = useState<WeatherLook | null>(null)
   const [paintHex, setPaintHex] = useState(DEFAULT_PAINT)
+  /**
+   * Buildings ON/OFF (Joey A/B). Default ON; persist so refresh keeps the choice.
+   * OFF → streamer skips building Overpass + Scene gets empty boxes.
+   */
+  const [buildingsOn, setBuildingsOn] = useState(() => {
+    try {
+      const v = localStorage.getItem('hdd-buildings-on')
+      if (v == null) return true
+      return v === '1' || v === 'true'
+    } catch {
+      return true
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('hdd-buildings-on', buildingsOn ? '1' : '0')
+    } catch {
+      /* private mode */
+    }
+  }, [buildingsOn])
 
   const booted = useRef(false)
   /** Destination lat/lng kept for reroutes even while polyline updates. */
@@ -77,7 +97,7 @@ export default function App() {
 
   // Open-world street streaming (#11). activeWays is the ONLY list Scene +
   // GpsDash may draw (hard GPS rule — no prefetch ghosts on the dial).
-  const stream = useStreetStreaming(dropAddress, dropNonce)
+  const stream = useStreetStreaming(dropAddress, dropNonce, buildingsOn)
 
   // Mirror streamer world into the existing `world` state so Hud / Scene keep
   // working; ways always come from active tiles only.
@@ -288,8 +308,21 @@ export default function App() {
         terrainMessage={terrainMessage}
         farTerrainMessage={farTerrainMessage}
         buildingsMessage={stream.buildingsMessage}
+        buildingsOn={buildingsOn}
+        onBuildingsOn={setBuildingsOn}
         tilesMessage={`Tiles: ${stream.activeTileCount} loaded · streaming`}
         streamMessage={stream.streamMessage}
+        queueMessage={
+          stream.streaming
+            ? `Fetch: ${
+                stream.corridorBlend < 0.33
+                  ? 'circle (crawl)'
+                  : stream.corridorBlend > 0.66
+                    ? 'corridor (highway)'
+                    : `blend ${stream.corridorBlend.toFixed(2)}`
+              } · next ${stream.nextQueueKey ?? '—'} · queue ${stream.queueDepth}`
+            : undefined
+        }
         weatherSummary={weather.summary}
         weatherPreset={weatherPreset}
         onWeatherPreset={setWeatherPreset}

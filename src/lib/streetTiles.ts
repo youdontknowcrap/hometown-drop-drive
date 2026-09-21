@@ -20,9 +20,16 @@
  *   Corners go through localToLatLng → Overpass bbox (south,west,north,east).
  *
  * RINGS (Chebyshev distance = max(|dtx|,|dtz|)):
- *   ACTIVE_RING   = 1 → 3×3 tiles LIVE in Scene + GpsDash (~3 km across)
+ *   ACTIVE_RING   = 1 → crawl baseline: 3×3 tiles LIVE in Scene + GpsDash
  *   PREFETCH_RING = 2 → outer ring may download into cache ONLY
- *   Distance > PREFETCH_RING → tile disposed
+ *   Distance > prefetch want-set → tile disposed
+ *
+ * LEARNING — Variable fetch shape (Joey design):
+ *   Crawl (< ~SPEED_CIRCLE_MPH): circular active radius around the car
+ *   (current 3×3 is fine). Highway (≥ ~SPEED_CORRIDOR_MPH): thin longer
+ *   corridor ahead along heading — NOT a fat circle. Blend look-ahead meters
+ *   + lateral half-width by |speedMph|. Queue sort: forward ≫ side ≫ behind
+ *   so MAX_IN_FLIGHT=1 still fetches what paints next (load order ≡ render cue).
  *
  * LEARNING — Fast Drop path (TTI / CPU spike fix):
  *   Old path: bootstrap enqueued the whole 3×3 (+ prefetch), waited for ~5
@@ -84,11 +91,36 @@ export const ACTIVE_RING = 1
 export const PREFETCH_RING = 2
 
 /**
- * How far ahead of the car (meters) we treat as “already there” for activate /
- * prefetch. At ~60 mph ≈ 27 m/s, 700 m ≈ 26 s of runway — next tiles promote
- * before soft-clamp can meet a continuing road at the AABB edge.
+ * Speed → fetch-shape thresholds (Joey).
+ *   |speed| < SPEED_CIRCLE_MPH  → circular 3×3 (crawl / neighborhood)
+ *   |speed| ≥ SPEED_CORRIDOR_MPH → long thin corridor along heading
+ *   Between: lerp look-ahead meters + lateral tile half-width.
  */
-export const ACTIVATE_LOOKAHEAD_M = 700
+export const SPEED_CIRCLE_MPH = 28
+export const SPEED_CORRIDOR_MPH = 58
+
+/** Look-ahead along heading at crawl — tiny; active set stays car-centered. */
+export const LOOKAHEAD_CRAWL_M = 80
+/**
+ * Look-ahead at highway. ~60 mph ≈ 27 m/s → 1600 m ≈ 60 s of runway so the
+ * thin corridor promotes before soft-clamp meets a continuing road.
+ * (Legacy name ACTIVATE_LOOKAHEAD_M kept as an alias of this highway end.)
+ */
+export const LOOKAHEAD_HIGHWAY_M = 1600
+/** @deprecated Use LOOKAHEAD_HIGHWAY_M — alias for older call sites / docs. */
+export const ACTIVATE_LOOKAHEAD_M = LOOKAHEAD_HIGHWAY_M
+
+/** 0 = circle (crawl), 1 = full corridor (highway). */
+export function speedCorridorBlend(speedMph: number): number {
+  const a = Math.abs(speedMph)
+  if (a <= SPEED_CIRCLE_MPH) return 0
+  if (a >= SPEED_CORRIDOR_MPH) return 1
+  return (a - SPEED_CIRCLE_MPH) / (SPEED_CORRIDOR_MPH - SPEED_CIRCLE_MPH)
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t
+}
 
 /**
  * Cap concurrent Overpass tile fetches.
@@ -155,6 +187,13 @@ export type StreamSnapshot = {
   source: 'osm' | 'demo'
   loadedAabb: LoadedAabb | null
   version: number
+  /** Teaching HUD: next Overpass tile key (priority queue head), or null. */
+  nextQueueKey: TileKey | null
+  /** Teaching HUD: pending tile fetches waiting on MAX_IN_FLIGHT / gap. */
+  queueDepth: number
+  /** 0 = circle crawl, 1 = highway corridor (from last updateCar). */
+  corridorBlend: number
+  buildingsEnabled: boolean
 }
 
 export function makeTileKey(tx: number, tz: number): TileKey {
@@ -282,6 +321,15 @@ export class StreetTileStreamer {
   private carTz = 0
   private lookTx = 0
   private lookTz = 0
+  /** Live car pose for corridor samples + priority scores (meters / rad / mph). */
+  private carX = 0
+  private carZ = 0
+  private carYaw = 0
+  private speedMph = 0
+  private lookM = LOOKAHEAD_CRAWL_M
+  private blendQ = 0
+  /** Last wantActive from reconcile — startFetch promotes against this set. */
+  private lastWantActive = new Set<TileKey>()
   /**
    * Stable activeWays reference — only replaced when the active set’s ways
    * content actually changes. Prevents Road / elev thrash on loading-count emits.
@@ -292,6 +340,11 @@ export class StreetTileStreamer {
   private gen = 0
   /** After center Drop paint, neighbors may fill (once). */
   private neighborsStarted = false
+  /**
+   * HUD Buildings ON/OFF. When false: skip Overpass building fetches + empty
+   * activeBuildings so streets/elev get the network + CPU (Joey A/B).
+   */
+  private buildingsEnabled = true
 
   constructor(origin: LatLng, dropLabel: string) {
     this.origin = origin
@@ -357,17 +410,22 @@ export class StreetTileStreamer {
       .map((t) => ({ key: t.key, tx: t.tx, tz: t.tz, ways: t.ways }))
       .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
     // Buildings follow the same active set (unload when tile demotes/drops).
-    const activeBuildings = mergeActiveBuildingBoxes(
-      activeTiles.map((t) => t.buildings),
-      MAX_BUILDINGS,
-    )
+    // When HUD toggles Buildings OFF, snapshot is empty (no Scene apply / no GPS).
+    const activeBuildings = this.buildingsEnabled
+      ? mergeActiveBuildingBoxes(
+          activeTiles.map((t) => t.buildings),
+          MAX_BUILDINGS,
+        )
+      : []
     const resN = activeBuildings.filter((b) => b.residential).length
-    const buildingsMessage =
-      activeBuildings.length > 0
+    const buildingsMessage = !this.buildingsEnabled
+      ? 'Buildings: OFF (streets + elev only — flip HUD to resume)'
+      : activeBuildings.length > 0
         ? `Buildings: ${activeBuildings.length} active (${resN} residential) · streamed per tile · cap ${MAX_BUILDINGS}`
         : loadingCount > 0
           ? 'Buildings: streaming with tiles…'
           : 'Buildings: none in active tiles'
+    const blend = speedCorridorBlend(this.speedMph)
     return {
       origin: this.origin,
       dropLabel: this.dropLabel,
@@ -387,6 +445,10 @@ export class StreetTileStreamer {
       source: this.source,
       loadedAabb: unionActiveAabb(all),
       version: this.version,
+      nextQueueKey: this.queue[0] ?? null,
+      queueDepth: this.queue.length,
+      corridorBlend: blend,
+      buildingsEnabled: this.buildingsEnabled,
     }
   }
 
@@ -459,7 +521,10 @@ export class StreetTileStreamer {
       )
 
       // Buildings after first paint — must not compete with Road mesh apply.
-      void this.deferBuildings(live, bbox, gen)
+      // Respect HUD Buildings OFF (Joey A/B: free Overpass for streets+elev).
+      if (this.buildingsEnabled) {
+        void this.deferBuildings(live, bbox, gen)
+      }
     } catch (err: unknown) {
       if (this.disposed || gen !== this.gen) return
       const live = this.tiles.get(key)
@@ -474,101 +539,223 @@ export class StreetTileStreamer {
   }
 
   /**
-   * After center ways are painted: enqueue ACTIVE + PREFETCH rings quietly.
+   * After center ways are painted: enqueue ACTIVE + PREFETCH quietly.
    * MAX_IN_FLIGHT=1 → serial neighbor fills, no 9-mesh apply burst.
+   * Drop is crawl-shaped (blend 0) so first neighbors are the classic 3×3.
    */
   fillNeighborsAfterDrop() {
     if (this.disposed || this.source === 'demo' || this.neighborsStarted) return
     this.neighborsStarted = true
-    this.reconcile(0, 0, 0, 0, false)
+    this.carX = 0
+    this.carZ = 0
+    this.carYaw = 0
+    this.speedMph = 0
+    this.lookM = LOOKAHEAD_CRAWL_M
+    this.blendQ = 0
+    this.reconcile(0, 0)
   }
 
   /**
-   * Poll with car local XZ. Optional yaw + speedMph drive look-ahead so the
-   * next tiles activate *before* soft-clamp meets a continuing road.
+   * HUD Buildings ON/OFF. OFF skips network + clears boxes so Overpass/CPU
+   * favor streets+elev; ON resumes deferred fetches for active tiles.
+   */
+  setBuildingsEnabled(on: boolean) {
+    if (this.buildingsEnabled === on) return
+    this.buildingsEnabled = on
+    if (!on) {
+      for (const t of this.tiles.values()) t.buildings = []
+      this.emit()
+      return
+    }
+    // Resume: fetch buildings for active tiles that have ways but no boxes yet.
+    const gen = this.gen
+    for (const t of this.tiles.values()) {
+      if (t.status !== 'active' && t.status !== 'cached') continue
+      if (t.buildings.length > 0) continue
+      if (t.ways.length === 0) continue
+      const bbox = tileToBbox(t.tx, t.tz, this.origin)
+      void this.deferBuildings(t, bbox, gen)
+    }
+    this.emit()
+  }
+
+  getBuildingsEnabled(): boolean {
+    return this.buildingsEnabled
+  }
+
+  /**
+   * Poll with car local XZ. yaw + speedMph drive the variable fetch shape:
+   * crawl → circle; highway → thin longer corridor; blend in between.
    * Yaw 0 = world −Z (same as Car / GpsDash).
    */
   updateCar(x: number, z: number, yaw = 0, speedMph = 0) {
     if (this.disposed || this.source === 'demo') return
+    this.carX = x
+    this.carZ = z
+    this.carYaw = yaw
+    this.speedMph = speedMph
+    const blend = speedCorridorBlend(speedMph)
+    const lookM = lerp(LOOKAHEAD_CRAWL_M, LOOKAHEAD_HIGHWAY_M, blend)
+    this.lookM = lookM
     const { tx, tz } = worldToTile(x, z)
-    // Look-ahead point along heading; floor speed so even crawling still primes.
-    const lookM = ACTIVATE_LOOKAHEAD_M
     const lx = x - Math.sin(yaw) * lookM
     const lz = z - Math.cos(yaw) * lookM
     const look = worldToTile(lx, lz)
+    // Quantize blend so small mph noise doesn’t thrash want-sets every poll.
+    const blendQ = Math.round(blend * 10)
     if (
       tx !== this.carTx ||
       tz !== this.carTz ||
       look.tx !== this.lookTx ||
-      look.tz !== this.lookTz
+      look.tz !== this.lookTz ||
+      blendQ !== this.blendQ
     ) {
       this.carTx = tx
       this.carTz = tz
       this.lookTx = look.tx
       this.lookTz = look.tz
-      this.reconcile(tx, tz, look.tx, look.tz, false)
+      this.blendQ = blendQ
+      this.reconcile(tx, tz)
     } else {
-      // Still pump — urgent look-ahead fetches may be waiting on the gap timer.
-      void speedMph
+      // Heading may still drift inside the same tile — keep queue forward-biased.
+      const before = `${this.queue[0] ?? ''}:${this.queue.length}`
+      this.sortQueue()
       this.pumpQueue()
+      const after = `${this.queue[0] ?? ''}:${this.queue.length}`
+      // Teaching HUD only — avoid 4 Hz React commits when nothing queue-visible changed.
+      if (before !== after) this.emitMeta()
     }
   }
 
   /**
-   * Active = union of ACTIVE_RING around the car tile AND around the look-ahead
-   * tile. Prefetch ring is relative to the car (unload behind still works).
+   * Build wantActive / wantPrefetch from speed-blended corridor (or circle).
+   *
+   * LEARNING — why not only Chebyshev rings around car + look?
+   *   Two fat rings make a blob (side tiles compete with the road ahead).
+   *   Highway: sample along heading with lateral half-width → 0 so the queue
+   *   and activate set match “what paints next out the windshield.”
    */
-  private reconcile(
+  private computeWantSets(
     cx: number,
     cz: number,
-    lx: number,
-    lz: number,
-    bootstrap: boolean,
-  ) {
+  ): { wantActive: Set<TileKey>; wantPrefetch: Set<TileKey> } {
     const wantActive = new Set<TileKey>()
     const wantPrefetch = new Set<TileKey>()
+    const blend = speedCorridorBlend(this.speedMph)
+    const lookM = this.lookM
+    const yaw = this.carYaw
 
     const consider = (ox: number, oz: number, ring: number, into: Set<TileKey>) => {
-      for (let dz = -ring; dz <= ring; dz++) {
-        for (let dx = -ring; dx <= ring; dx++) {
+      const r = Math.max(0, ring)
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
           into.add(makeTileKey(ox + dx, oz + dz))
         }
       }
     }
-    consider(cx, cz, ACTIVE_RING, wantActive)
-    consider(lx, lz, ACTIVE_RING, wantActive)
-    consider(cx, cz, PREFETCH_RING, wantPrefetch)
-    // Also prefetch around look-ahead so the outer shell is warm before arrival.
-    consider(lx, lz, PREFETCH_RING, wantPrefetch)
 
+    // Lateral half-width in tiles: 1 at crawl → 0 at highway (one-tile strip).
+    const latActive = Math.round(lerp(ACTIVE_RING, 0, blend))
+    // Car-centered ring: full 3×3 at crawl; just the car tile at highway.
+    const carActiveRing = Math.round(lerp(ACTIVE_RING, 0, blend))
+    consider(cx, cz, carActiveRing, wantActive)
+
+    // Corridor samples along heading (yaw 0 = −Z).
+    const stepM = TILE_M * 0.5
+    const steps = Math.max(1, Math.ceil(lookM / stepM))
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps
+      const sx = this.carX - Math.sin(yaw) * lookM * t
+      const sz = this.carZ - Math.cos(yaw) * lookM * t
+      const s = worldToTile(sx, sz)
+      consider(s.tx, s.tz, latActive, wantActive)
+    }
+
+    // Prefetch: keep classic shell around the car + a slightly wider/longer
+    // corridor so the next promote is often already cached.
+    consider(cx, cz, PREFETCH_RING, wantPrefetch)
+    const latPref = Math.max(latActive + 1, Math.round(lerp(PREFETCH_RING, 1, blend)))
+    const prefLook = lookM * lerp(1, 1.35, blend)
+    const prefSteps = Math.max(1, Math.ceil(prefLook / stepM))
+    for (let i = 0; i <= prefSteps; i++) {
+      const t = i / prefSteps
+      const sx = this.carX - Math.sin(yaw) * prefLook * t
+      const sz = this.carZ - Math.cos(yaw) * prefLook * t
+      const s = worldToTile(sx, sz)
+      consider(s.tx, s.tz, latPref, wantPrefetch)
+    }
+    // Everything active is also prefetch-eligible.
+    for (const k of wantActive) wantPrefetch.add(k)
+
+    return { wantActive, wantPrefetch }
+  }
+
+  /**
+   * Lower score = fetch sooner. Forward / near look-ahead / on-center beat
+   * side and behind — matches soft-edge runway + what the driver sees next.
+   */
+  private tileFetchScore(tx: number, tz: number): number {
+    const tcx = (tx + 0.5) * TILE_M
+    const tcz = (tz + 0.5) * TILE_M
+    const dx = tcx - this.carX
+    const dz = tcz - this.carZ
+    const fwd = -Math.sin(this.carYaw) * dx - Math.cos(this.carYaw) * dz
+    const lat = Math.abs(-Math.cos(this.carYaw) * dx + Math.sin(this.carYaw) * dz)
+    const dist = Math.hypot(dx, dz)
+    const lx = this.carX - Math.sin(this.carYaw) * this.lookM
+    const lz = this.carZ - Math.cos(this.carYaw) * this.lookM
+    const dLook = Math.hypot(tcx - lx, tcz - lz)
+    // Behind more than ~⅓ tile → hard deprioritize (still prefetch eventually).
+    const behind = fwd < -TILE_M * 0.35 ? 50_000 + Math.abs(fwd) : 0
+    return behind + lat * 4 + dLook * 0.85 + dist * 0.25 - Math.max(0, fwd) * 0.15
+  }
+
+  private sortQueue() {
+    if (this.queue.length < 2) return
+    this.queue.sort((a, b) => {
+      const [ax, az] = a.split(',').map(Number)
+      const [bx, bz] = b.split(',').map(Number)
+      return this.tileFetchScore(ax, az) - this.tileFetchScore(bx, bz)
+    })
+  }
+
+  private reconcile(cx: number, cz: number) {
+    const { wantActive, wantPrefetch } = this.computeWantSets(cx, cz)
+    this.lastWantActive = wantActive
+    // Keep lookTx/Tz as the far sample for HUD / legacy readers.
+    const lx = this.carX - Math.sin(this.carYaw) * this.lookM
+    const lz = this.carZ - Math.cos(this.carYaw) * this.lookM
+    const look = worldToTile(lx, lz)
+    this.lookTx = look.tx
+    this.lookTz = look.tz
+
+    // Create empties for anything in the prefetch want-set (sorted enqueue later).
+    const newKeys: TileKey[] = []
     for (const key of wantPrefetch) {
+      if (this.tiles.has(key)) continue
       const [txs, tzs] = key.split(',')
       const txi = Number(txs)
       const tzi = Number(tzs)
-      if (!this.tiles.has(key)) {
-        this.tiles.set(key, {
-          key,
-          tx: txi,
-          tz: tzi,
-          status: 'empty',
-          ways: [],
-          buildings: [],
-        })
-        const urgent =
-          bootstrap &&
-          (chebyshev(cx, cz, txi, tzi) <= ACTIVE_RING ||
-            chebyshev(lx, lz, txi, tzi) <= ACTIVE_RING)
-        this.enqueue(key, urgent)
-      }
+      this.tiles.set(key, {
+        key,
+        tx: txi,
+        tz: tzi,
+        status: 'empty',
+        ways: [],
+        buildings: [],
+      })
+      newKeys.push(key)
     }
 
     let changed = false
     for (const tile of [...this.tiles.values()]) {
+      // Unload only when outside the prefetch want-set AND outside car shell.
       const dCar = chebyshev(cx, cz, tile.tx, tile.tz)
-      const dLook = chebyshev(lx, lz, tile.tx, tile.tz)
-      // Keep if within prefetch of car OR look-ahead (don’t dump the path ahead).
-      if (dCar > PREFETCH_RING && dLook > PREFETCH_RING) {
+      if (!wantPrefetch.has(tile.key) && dCar > PREFETCH_RING) {
         this.tiles.delete(tile.key)
+        // Drop from queue if pending.
+        const qi = this.queue.indexOf(tile.key)
+        if (qi >= 0) this.queue.splice(qi, 1)
         changed = true
         continue
       }
@@ -578,23 +765,31 @@ export class StreetTileStreamer {
           tile.status = 'active'
           changed = true
         } else if (tile.status === 'empty' || tile.status === 'error') {
-          // Urgent when on the look-ahead active ring — soft edge must not win.
-          this.enqueue(tile.key, true)
+          this.enqueue(tile.key)
         }
       } else if (tile.status === 'active') {
         // HARD GPS RULE: demote → disappears from Scene + GpsDash together.
         tile.status = 'cached'
         changed = true
       } else if (tile.status === 'empty' || tile.status === 'error') {
-        if (wantPrefetch.has(tile.key)) this.enqueue(tile.key, false)
+        if (wantPrefetch.has(tile.key)) this.enqueue(tile.key)
       }
     }
 
+    for (const key of newKeys) this.enqueue(key)
+
+    this.sortQueue()
     if (changed) this.emit()
+    else this.emitMeta()
     this.pumpQueue()
   }
 
-  private enqueue(key: TileKey, urgent: boolean) {
+  /**
+   * Enqueue then priority-sort. LEARNING — do NOT unshift “urgent” in ring
+   * discovery order (Chebyshev nested loops ≠ distance / forward). Sort so
+   * forward/center match what RoadTiles will paint next.
+   */
+  private enqueue(key: TileKey) {
     if (this.queue.includes(key)) return
     const tile = this.tiles.get(key)
     if (!tile) return
@@ -605,12 +800,12 @@ export class StreetTileStreamer {
     ) {
       return
     }
-    if (urgent) this.queue.unshift(key)
-    else this.queue.push(key)
+    this.queue.push(key)
   }
 
   private pumpQueue() {
     if (this.disposed || this.source === 'demo') return
+    this.sortQueue()
     const now = performance.now()
     while (
       this.inFlight < MAX_IN_FLIGHT &&
@@ -654,17 +849,16 @@ export class StreetTileStreamer {
         const live = this.tiles.get(tile.key)
         if (!live) return
         live.ways = ways
-        const dCar = chebyshev(this.carTx, this.carTz, live.tx, live.tz)
-        const dLook = chebyshev(this.lookTx, this.lookTz, live.tx, live.tz)
-        // Active if near the car OR the look-ahead point (velocity runway).
-        live.status =
-          dCar <= ACTIVE_RING || dLook <= ACTIVE_RING ? 'active' : 'cached'
+        // Promote against the speed-blended wantActive (corridor or circle).
+        live.status = this.lastWantActive.has(live.key) ? 'active' : 'cached'
 
         // Ways package first — asphalt / GPS can appear without buildings.
         this.emit()
 
-        // Buildings deferred (second emit). Fail soft.
-        await this.deferBuildings(live, bbox, gen)
+        // Buildings deferred (second emit). Skip entirely when HUD Buildings OFF.
+        if (this.buildingsEnabled) {
+          await this.deferBuildings(live, bbox, gen)
+        }
       })
       .catch((err: unknown) => {
         if (this.disposed || gen !== this.gen) return
@@ -687,6 +881,7 @@ export class StreetTileStreamer {
     bbox: { south: number; west: number; north: number; east: number },
     gen: number,
   ) {
+    if (!this.buildingsEnabled) return
     try {
       const bw = await mainFetchBuildings(
         bbox.south,
@@ -697,6 +892,7 @@ export class StreetTileStreamer {
         MAX_BUILDINGS_PER_TILE,
       )
       if (this.disposed || gen !== this.gen) return
+      if (!this.buildingsEnabled) return
       const again = this.tiles.get(tile.key)
       if (!again) return
       again.buildings = bw.boxes
@@ -713,7 +909,7 @@ export class StreetTileStreamer {
  * LEARNING — padM is a small OUTWARD margin (meters past the tile edge), not a
  * shrink. Never use this to fence mid-asphalt: if a road is on a loaded tile it
  * sits inside the AABB. Hitting a “wall on a road” means the next tile was not
- * active yet — fix with velocity-ahead activate (updateCar look-ahead), not a
+ * active yet — fix with speed-blended corridor activate (updateCar), not a
  * tighter clamp. Replaces the hard ~200 ft corridor while streaming.
  */
 export function softClampToLoadedAabb(
