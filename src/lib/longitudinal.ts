@@ -9,7 +9,8 @@
  *   Throttle  ≈ 18 mph/s  →  0–60 mph in 60/18 ≈ 3.3 s (was ~12 s at +5)
  *   Brake     ≈ 28 mph/s  →  hard stop from 60 in ~2.1 s
  *   Coast     ≈  4 mph/s  →  gentle decay when you let go
- *   Cap           110 mph (unchanged product lock)
+ *   Cap           110 mph manual / cruise (product lock)
+ *   Autopilot cap 200 mph when Car passes maxSpeedMph (see autopilot.ts)
  *
  * WHY punchier? The old +5/−8 felt like a grocery cart. Real-ish 0–60 for a
  * family arcade toy sits around 3–4 s — still readable for kids, not a rocket.
@@ -24,7 +25,13 @@
  */
 
 export const MPH_TO_MS = 0.44704
+/** Manual + cruise on-road cap (mph). Autopilot may pass a higher maxSpeedMph. */
 export const MAX_SPEED_MPH = 110
+/**
+ * Absolute ceiling for stepSignedSpeedMph (autopilot 200). Never raise above
+ * what Car is allowed to request — keeps a single clamp site.
+ */
+export const ABSOLUTE_MAX_SPEED_MPH = 200
 
 /**
  * Off-road (desert, past asphalt/track half-width) — Joey playtest feel.
@@ -153,7 +160,10 @@ export function stepSignedSpeedMph(
     next = 0
   }
 
-  const cap = Math.max(1, Math.min(MAX_SPEED_MPH, maxSpeedMph))
+  // LEARNING: used to hard-min with MAX_SPEED_MPH (110), which blocked AP 200.
+  // Car chooses the soft cap (110 manual / 200 AP / 55 off-road); we only
+  // enforce ABSOLUTE_MAX_SPEED_MPH as a last-resort ceiling.
+  const cap = Math.max(1, Math.min(ABSOLUTE_MAX_SPEED_MPH, maxSpeedMph))
   return Math.max(-cap, Math.min(cap, next))
 }
 

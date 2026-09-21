@@ -177,6 +177,13 @@ export type StreamSnapshot = {
    * (pre-dedupe within each tile); GPS still uses flattened activeWays.
    */
   activeTiles: ActiveTileWays[]
+  /**
+   * active + cached ways for route align / AP near-car splice ONLY.
+   * LEARNING: GPS dial + Scene still use activeWays (hard GPS rule). Align
+   * needs the wider fetched bubble so Dijkstra can bridge thin active-ring gaps
+   * without crow-flight chords — without painting prefetch ghosts on the dial.
+   */
+  alignWays: StreetWay[]
   /** HARD GPS RULE still streets-only — buildings are scenery, not dial ink. */
   activeBuildings: BuildingBox[]
   buildingsMessage: string
@@ -336,6 +343,9 @@ export class StreetTileStreamer {
    */
   private cachedActiveWays: StreetWay[] = []
   private cachedActiveKey = ''
+  /** Stable active+cached ways for align (not Scene/GPS). */
+  private cachedAlignWays: StreetWay[] = []
+  private cachedAlignKey = ''
   /** Bumped on dispose / Drop reset so late fetches are ignored. */
   private gen = 0
   /** After center Drop paint, neighbors may fill (once). */
@@ -388,6 +398,33 @@ export class StreetTileStreamer {
     return this.cachedActiveWays
   }
 
+  /** Fingerprint active+cached tile way counts (align graph coverage). */
+  private alignContentKey(): string {
+    const parts: string[] = []
+    for (const t of this.tiles.values()) {
+      if (t.status !== 'active' && t.status !== 'cached') continue
+      parts.push(`${t.key}:${t.ways.length}`)
+    }
+    parts.sort()
+    return parts.join('|')
+  }
+
+  /**
+   * Ways for near-car route splice — active + cached (fetched) tiles.
+   * Not for Scene/GpsDash (hard GPS rule stays on activeWays).
+   */
+  private refreshAlignWaysCache(): StreetWay[] {
+    const key = this.alignContentKey()
+    if (key === this.cachedAlignKey) return this.cachedAlignWays
+    const tiles = [...this.tiles.values()].filter(
+      (t) =>
+        (t.status === 'active' || t.status === 'cached') && t.ways.length > 0,
+    )
+    this.cachedAlignWays = dedupeWays(tiles.flatMap((t) => t.ways))
+    this.cachedAlignKey = key
+    return this.cachedAlignWays
+  }
+
   dispose() {
     this.disposed = true
     this.gen += 1
@@ -395,6 +432,8 @@ export class StreetTileStreamer {
     this.tiles.clear()
     this.cachedActiveWays = []
     this.cachedActiveKey = ''
+    this.cachedAlignWays = []
+    this.cachedAlignKey = ''
     this.listeners.clear()
   }
 
@@ -405,6 +444,7 @@ export class StreetTileStreamer {
     const cachedCount = all.filter((t) => t.status === 'cached').length
     // Stable reference when active content unchanged — Road meshes stay put.
     const activeWays = this.refreshActiveWaysCache()
+    const alignWays = this.refreshAlignWaysCache()
     // Per-tile list for incremental Road groups (sorted for stable React keys).
     const activeTileWays: ActiveTileWays[] = activeTiles
       .map((t) => ({ key: t.key, tx: t.tx, tz: t.tz, ways: t.ways }))
@@ -430,6 +470,7 @@ export class StreetTileStreamer {
       origin: this.origin,
       dropLabel: this.dropLabel,
       activeWays,
+      alignWays,
       activeTiles: activeTileWays,
       activeBuildings,
       buildingsMessage,
@@ -459,6 +500,8 @@ export class StreetTileStreamer {
     this.queue.length = 0
     this.cachedActiveWays = []
     this.cachedActiveKey = ''
+    this.cachedAlignWays = []
+    this.cachedAlignKey = ''
     this.source = 'demo'
     this.tiles.set(key, {
       key,

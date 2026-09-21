@@ -501,12 +501,16 @@ export function Scene({
       />
 
       {/*
-        LEARNING — Suspense isolation (Joey remount lock):
-          One outer Suspense around Physics + RoadTiles + StreetLabels meant the
-          first asphalt useTexture OR Troika Text font load suspended the WHOLE
-          boundary → Physics/Car unmounted → RigidBody remount at spawn,
-          signedMph ref re-inits to 0, FollowCam loses player-car (intro wiggle).
-          Nested boundaries: texture/font suspends never remount Car.
+        LEARNING — Suspense isolation (Joey remount lock) — DO NOT REGRESS:
+          R3F Canvas already wraps children in Suspense. One MORE outer Suspense
+          around Physics + RoadTiles + StreetLabels meant the first asphalt
+          useTexture OR Troika Text font load suspended the WHOLE boundary →
+          Physics/Car unmounted → RigidBody remount at spawn, signedMph→0,
+          FollowCam intro wiggle. Nested boundaries only: texture/font/GLTF
+          suspends never remount Car. spawnKey/routeVersion = dropNonce ONLY
+          (never streamVersion, ways fingerprint, or routeLocal replan).
+          Also: never sync-align the driven path in the same tick as mesh apply
+          (see App routeAlignScheduler) — long tasks look like remounts too.
       */}
       <Physics gravity={[0, -9.81, 0]} interpolate>
         <Suspense fallback={null}>
@@ -560,7 +564,15 @@ export function Scene({
       <Suspense fallback={null}>
         <StreetLabels streets={localStreets} heightGrid={heightGrid} />
       </Suspense>
-      <RouteLine points={drapedRoute} visible={showRoute} />
+      {/*
+        RouteLine outside Physics but MUST stay nested under Suspense: R3F
+        Canvas wraps ALL children in one Suspense. Anything that suspends
+        without a nested boundary unmounts Physics/Car (speed→0 + intro wiggle).
+        Route replan / align must never remount Car either — path is a prop only.
+      */}
+      <Suspense fallback={null}>
+        <RouteLine points={drapedRoute} visible={showRoute} />
+      </Suspense>
       <Rain density={weather.rain ? weather.rainDensity : 0} />
 
       <FollowCam

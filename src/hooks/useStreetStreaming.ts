@@ -32,6 +32,11 @@ export type StreetStreamingState = {
   world: StreetWorld
   /** HARD GPS RULE: same ways Scene renders — never prefetch-only. */
   activeWays: StreetWay[]
+  /**
+   * active+cached ways for AP/route near-car splice only (not dial/Scene).
+   * Wider than activeWays so align can use fetched corridor coverage.
+   */
+  alignWays: StreetWay[]
   /** Per-tile ways for incremental Road groups (Scene remeshes dirty tiles only). */
   activeTiles: ActiveTileWays[]
   /** Buildings for active tiles only (unload with tiles). Not on GPS. */
@@ -76,6 +81,7 @@ function stateFromStreamer(streamer: StreetTileStreamer): Omit<StreetStreamingSt
   return {
     world: worldFromStreamer(streamer),
     activeWays: s.activeWays,
+    alignWays: s.alignWays,
     activeTiles: s.activeTiles,
     activeBuildings: s.activeBuildings,
     buildingsMessage: s.buildingsMessage,
@@ -103,6 +109,7 @@ const IDLE: StreetStreamingState = {
     wayCount: 0,
   },
   activeWays: [],
+  alignWays: [],
   activeTiles: [],
   activeBuildings: [],
   buildingsMessage: 'Buildings: …',

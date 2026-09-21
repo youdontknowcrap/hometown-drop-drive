@@ -23,7 +23,15 @@ type FollowCamProps = {
  * a tight chase cam + empty desert = weak parallax. We default a bit farther
  * back and use a slightly snappier follow (higher lerp = less "heavy damp")
  * so ground texture streams past more readably — WITHOUT faking the mph number.
+ *
+ * LEARNING — remount guard (module scope):
+ *   If FollowCam remounts mid-Drop (Canvas Suspense recovery), useRef(0) resets
+ *   and `initialized !== routeVersion` would replay the intro snap (camera
+ *   wiggle). Remember which dropNonce already intro'd so same-Drop remounts
+ *   resume chase from carPose instead.
  */
+let introDoneForRouteVersion = -1
+
 export function FollowCam({
   targetSpawn,
   routeVersion,
@@ -53,13 +61,22 @@ export function FollowCam({
 
   useFrame(() => {
     if (initialized.current !== routeVersion) {
-      camera.position.set(
-        targetSpawn[0],
-        targetSpawn[1] + h.current,
-        targetSpawn[2] + dist.current,
-      )
-      camera.lookAt(targetSpawn[0], targetSpawn[1], targetSpawn[2])
-      initialized.current = routeVersion
+      if (
+        introDoneForRouteVersion === routeVersion &&
+        carPose.ready
+      ) {
+        // Same Drop remount — skip intro snap; chase continues below.
+        initialized.current = routeVersion
+      } else {
+        camera.position.set(
+          targetSpawn[0],
+          targetSpawn[1] + h.current,
+          targetSpawn[2] + dist.current,
+        )
+        camera.lookAt(targetSpawn[0], targetSpawn[1], targetSpawn[2])
+        initialized.current = routeVersion
+        introDoneForRouteVersion = routeVersion
+      }
     }
 
     const car = scene.getObjectByName('player-car')
