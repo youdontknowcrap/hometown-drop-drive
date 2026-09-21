@@ -83,6 +83,7 @@ export function Ground({ heightGrid }: GroundProps) {
         geometry={geometry}
         position={[centerX, 0, centerZ]}
         receiveShadow
+        renderOrder={0}
       >
         <meshStandardMaterial
           map={diff}

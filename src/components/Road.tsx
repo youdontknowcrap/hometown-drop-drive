@@ -5,6 +5,7 @@ import {
   buildEdgeCurb,
   buildLanePaint,
   buildRoadRibbon,
+  densifyPath,
   localPathLengthMeters,
   mergeMeshArrays,
   type MeshArrays,
@@ -28,6 +29,18 @@ type RoadProps = {
   /** Terrarium (or flat) — ribbons are draped so asphalt follows hills. */
   heightGrid: HeightGrid
 }
+
+/**
+ * Extra meters above sampleHeight for ribbon / paint / curb.
+ *
+ * LEARNING — why bias on top of draping?
+ *   Ground and road both call sampleHeight, but 5× arcade hills + a coarser
+ *   ribbon (even after densify) still leave near-coplanar z-fights: desert
+ *   triangles can win the depth test and "eat" asphalt on slopes. A few
+ *   tenths of a meter lift keeps the black band readable without floating the
+ *   car (Car pins Y to the same sampler, not to the ribbon mesh).
+ */
+const ROAD_Y_BIAS_M = 0.4
 
 function arraysToGeometry(built: MeshArrays | null): THREE.BufferGeometry | null {
   if (!built || built.positions.length < 9) return null
@@ -71,7 +84,7 @@ function drapeGeometry(
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i)
     const z = pos.getZ(i)
-    // Keep the small ribbon bias (0.12–0.14) already baked into Y, add terrain.
+    // Keep the ribbon bias already baked into Y, add terrain sample.
     pos.setY(i, pos.getY(i) + sampleHeight(grid, x, z))
   }
   pos.needsUpdate = true
@@ -79,6 +92,11 @@ function drapeGeometry(
   return geo
 }
 
+/** Densify OSM centerline to ~cellSize so draped chords don't cut through hills. */
+function pathForDrape(path: XzPoint[], grid: HeightGrid): XzPoint[] {
+  const maxSeg = Math.max(8, grid.cellSize)
+  return densifyPath(path, maxSeg)
+}
 
 /**
  * OSM streets as asphalt / service / dirt ribbons.
@@ -89,6 +107,10 @@ function drapeGeometry(
  * Playtest: only black curb lines showed — fill was camouflaged / hard to
  * read. Ribbons are raised, DoubleSide, and multiply a near-black tint so the
  * paved band is obvious even when the albedo map is mid-gray.
+ *
+ * Playtest (hills): streets disappeared on Ridgecrest slopes — coarse OSM
+ * verts + tiny Y bias let Ground poke through. Densify + ROAD_Y_BIAS_M +
+ * polygonOffset / renderOrder so asphalt stays on top of the desert mesh.
  */
 export function Road({ streets, heightGrid }: RoadProps) {
   const [diff, nor] = useTexture(
@@ -103,16 +125,17 @@ export function Road({ streets, heightGrid }: RoadProps) {
 
     for (const street of streets) {
       const width = widthForHighway(street.highway)
-      const path = street.points
+      const path = pathForDrape(street.points, heightGrid)
       if (street.kind === 'dirt') {
-        const mesh = buildRoadRibbon(path, width, 0.12)
+        const mesh = buildRoadRibbon(path, width, ROAD_Y_BIAS_M)
         if (mesh) dirt.push(mesh)
         continue
       }
 
       const bucket = street.kind === 'service' ? service : paved
-      // Keep paved clearly above the desert plane (y=0) to avoid z-fight.
-      const y = street.kind === 'service' ? 0.12 : 0.14
+      // Service a hair lower than paved so main roads read first on z-fight.
+      const y =
+        street.kind === 'service' ? ROAD_Y_BIAS_M : ROAD_Y_BIAS_M + 0.05
       const ribbon = buildRoadRibbon(path, width, y)
       if (ribbon) bucket.ribbon.push(ribbon)
 
@@ -125,7 +148,8 @@ export function Road({ streets, heightGrid }: RoadProps) {
       if (curb) bucket.curb.push(curb)
 
       // Lane paint on longer paved roads only (not tiny service stubs).
-      if (street.kind === 'paved' && localPathLengthMeters(path) >= 28) {
+      // Length from original points is fine — densify doesn't change total length.
+      if (street.kind === 'paved' && localPathLengthMeters(street.points) >= 28) {
         const paint = buildLanePaint(path, width, y + 0.025)
         if (paint) bucket.paint.push(paint)
       }
@@ -170,8 +194,8 @@ export function Road({ streets, heightGrid }: RoadProps) {
             emissiveIntensity={0.2}
             side={THREE.DoubleSide}
             polygonOffset
-            polygonOffsetFactor={-1}
-            polygonOffsetUnits={-1}
+            polygonOffsetFactor={-2}
+            polygonOffsetUnits={-2}
           />
         </mesh>
       ) : null}
@@ -182,6 +206,9 @@ export function Road({ streets, heightGrid }: RoadProps) {
             roughness={0.95}
             metalness={0}
             side={THREE.DoubleSide}
+            polygonOffset
+            polygonOffsetFactor={-2}
+            polygonOffsetUnits={-2}
           />
         </mesh>
       ) : null}
@@ -194,7 +221,8 @@ export function Road({ streets, heightGrid }: RoadProps) {
             roughness={0.55}
             metalness={0}
             polygonOffset
-            polygonOffsetFactor={-2}
+            polygonOffsetFactor={-3}
+            polygonOffsetUnits={-3}
             side={THREE.DoubleSide}
           />
         </mesh>
@@ -212,7 +240,8 @@ export function Road({ streets, heightGrid }: RoadProps) {
             emissiveIntensity={0.15}
             side={THREE.DoubleSide}
             polygonOffset
-            polygonOffsetFactor={-1}
+            polygonOffsetFactor={-2}
+            polygonOffsetUnits={-2}
           />
         </mesh>
       ) : null}
@@ -223,6 +252,9 @@ export function Road({ streets, heightGrid }: RoadProps) {
             roughness={0.95}
             metalness={0}
             side={THREE.DoubleSide}
+            polygonOffset
+            polygonOffsetFactor={-2}
+            polygonOffsetUnits={-2}
           />
         </mesh>
       ) : null}
@@ -234,6 +266,9 @@ export function Road({ streets, heightGrid }: RoadProps) {
             roughness={1}
             metalness={0}
             side={THREE.DoubleSide}
+            polygonOffset
+            polygonOffsetFactor={-2}
+            polygonOffsetUnits={-2}
           />
         </mesh>
       ) : null}

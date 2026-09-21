@@ -113,6 +113,8 @@ Decode: elev_m = (R × 256 + G + B / 256) − 32768
 
 We displace the ground under the loaded street bbox, drape asphalt + GPS line, and pin the car’s Y to a bilinear sample. Heights are **relative to spawn elevation** so Drop doesn’t launch into the sky, then ×**~5 arcade exaggeration** so basin hills read in a chase cam (HUD + speedo MSL undo that factor). A separate **far LOD ring** (~12 km, visual only, Terrarium z8–z9 or Open-Meteo) draws distant mountains beyond the near bbox. Tile fetch failure → flat ground (still playable).
 
+Playtest fix (hills eat roads): OSM centerlines are densified to ~`cellSize` before ribbon build, ribbons get ~**0.4 m** Y bias above `sampleHeight`, and asphalt materials use stronger `polygonOffset` / `renderOrder` so Ground doesn’t swallow the black band on Ridgecrest slopes. The car still pins Y to the same sampler (no float above a buried ribbon).
+
 This works **US-wide** for a later cross-country pass. **Road streaming** (issue #11) is separate — elevation already follows lat/lng; OSM streets are still a ~3 km Overpass box today.
 
 See `src/lib/terrarium.ts`, `src/components/Ground.tsx`, Vite `/api/terrarium` proxy.
@@ -142,7 +144,7 @@ Left control frame hides to a thin tab (`H` or `[`, persisted in `localStorage`)
 
 ## Floating street names
 
-OSM ways often carry a `name` (or `ref` for numbered routes). We store those on `StreetWay`, place a GPU `Text` + `Billboard` a few meters above the nearest centerline point to the car, and cull hard (named only, one label per unique name, ~350 m range, fade at the edge). World-space font size gives free perspective: **bigger close, smaller far**. Demo fallback invents a couple of names (China Lake Blvd / Ridgecrest Blvd) so offline still teaches the feature.
+OSM ways often carry a `name` (or `ref` for numbered routes). We store those on `StreetWay`, place a GPU `Text` + `Billboard` a few meters above the nearest centerline point to the car, and cull hard (named only, one label per unique name, ~350 m range, fade at the edge, max 6). World-space font size is **~2.1 m** tall (playtest cut ~50% from 4.2 m so names stop cluttering the chase cam); perspective still gives **bigger close, smaller far**. Demo fallback invents a couple of names (China Lake Blvd / Ridgecrest Blvd) so offline still teaches the feature.
 
 Verify: Drop Ridgecrest, drive China Lake Blvd — the name floats ahead and shrinks as you leave it behind.
 

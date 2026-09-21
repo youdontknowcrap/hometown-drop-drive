@@ -23,15 +23,16 @@ type StreetLabelsProps = {
  * Floating street-name labels in the 3D view (not the GPS dial).
  *
  * LEARNING — world-space Text + Billboard:
- *   Troika `Text` lives in meters in the scene. A fixed fontSize (≈4 m tall)
- *   looks big when you're next to China Lake Blvd and shrinks with true
+ *   Troika `Text` lives in meters in the scene. A fixed fontSize (~2.1 m —
+ *   playtest cut ~50% from 4.2 m so names stop dominating the chase cam)
+ *   still looks bigger next to China Lake Blvd and shrinks with true
  *   perspective as you drive away — depth cue without fake CSS font math.
  *   `Billboard` rotates the group to face the camera every frame so names
  *   stay readable while turning (like arcade race HUD markers).
  *
  *   Which labels show is recomputed every few frames from `carPose` (written
  *   by Car). Aggressive cull lives in `pickStreetLabels` — named ways only,
- *   one per unique name, within ~350 m, opacity fade at range.
+ *   one per unique name, within ~350 m, opacity fade at range, max 6.
  */
 export function StreetLabels({ streets, heightGrid }: StreetLabelsProps) {
   const named = useMemo((): NamedStreet[] => {
@@ -103,7 +104,7 @@ function StreetLabelMark({ name, position, opacity }: MarkProps) {
   // Rough pill width from character count (world meters).
   const pillW = Math.max(
     LABEL_FONT_SIZE_M * 2.4,
-    Math.min(LABEL_FONT_SIZE_M * 0.55 * name.length + LABEL_FONT_SIZE_M, 28),
+    Math.min(LABEL_FONT_SIZE_M * 0.55 * name.length + LABEL_FONT_SIZE_M, 14),
   )
   const pillH = LABEL_FONT_SIZE_M * 1.35
 
@@ -126,11 +127,11 @@ function StreetLabelMark({ name, position, opacity }: MarkProps) {
           color="#f2f5fa"
           anchorX="center"
           anchorY="middle"
-          outlineWidth={0.14}
+          outlineWidth={0.07}
           outlineColor="#05070c"
           outlineOpacity={0.85 * opacity}
           fillOpacity={opacity}
-          maxWidth={32}
+          maxWidth={16}
           textAlign="center"
           renderOrder={9}
           depthOffset={-2}

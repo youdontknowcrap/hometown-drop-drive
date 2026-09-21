@@ -128,6 +128,39 @@ export type MeshArrays = {
   lengthMeters: number
 }
 
+/**
+ * Subdivide a centerline so no segment is longer than `maxSegLen` meters.
+ *
+ * LEARNING — why densify before draping?
+ *   OSM ways often jump 100–500 m between nodes. Road ribbon verts only exist
+ *   at those nodes; after we add sampleHeight, chords between verts are straight
+ *   in 3D while the Ground mesh (cellSize ≈ tens of m, 5× arcade hills) follows
+ *   the slope. Mid-segment desert then pokes through / buries the asphalt.
+ *   Densifying to ~heightGrid.cellSize puts ribbon verts on the same hill
+ *   frequency as the terrain mesh so draping actually sticks.
+ */
+export function densifyPath(path: XzPoint[], maxSegLen: number): XzPoint[] {
+  if (path.length < 2 || !(maxSegLen > 0)) return path
+  const out: XzPoint[] = [path[0]]
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1]
+    const b = path[i]
+    const dx = b[0] - a[0]
+    const dy = b[1] - a[1]
+    const dz = b[2] - a[2]
+    const len = Math.hypot(dx, dz)
+    if (len > maxSegLen) {
+      const steps = Math.ceil(len / maxSegLen)
+      for (let s = 1; s < steps; s++) {
+        const t = s / steps
+        out.push([a[0] + dx * t, a[1] + dy * t, a[2] + dz * t])
+      }
+    }
+    out.push(b)
+  }
+  return out
+}
+
 /** Two-lane asphalt ribbon. UV.v = meters / ASPHALT_REPEAT_M (world-locked). */
 export function buildRoadRibbon(
   path: XzPoint[],

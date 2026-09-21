@@ -11,9 +11,9 @@
  *     4. Drop anything outside ~MAX_RANGE_M, fade near the edge, hide too-close.
  *     5. Cap count so a dense downtown still stays readable.
  *
- * Perspective: world-space Text at fixed meters-tall fontSize + Billboard.
- * Camera distance does the "bigger close / smaller far" for free — no fake
- * screen-space font scaling needed.
+ * Perspective: world-space Text at fixed meters-tall fontSize (~2.1 m) +
+ * Billboard. Camera distance does the "bigger close / smaller far" for free
+ * — no fake screen-space font scaling needed.
  */
 
 import { projectOntoPath } from './guidance'
@@ -26,11 +26,12 @@ export const LABEL_FADE_START_M = 240
 /** Hide when the car is almost on top of the label (under chase cam). */
 export const LABEL_MIN_RANGE_M = 14
 /** Hard cap — teen STEM racer tone, not HUD spam. */
-export const LABEL_MAX_COUNT = 8
+export const LABEL_MAX_COUNT = 6
 /** Float this many meters above terrain sample. */
 export const LABEL_HEIGHT_ABOVE_M = 5.2
-/** World-space Text height in meters (perspective shrinks it on screen). */
-export const LABEL_FONT_SIZE_M = 4.2
+/** World-space Text height in meters (perspective shrinks it on screen).
+ * Playtest: 4.2 m felt huge/cluttered — ~half (~2.1 m) reads clearer. */
+export const LABEL_FONT_SIZE_M = 2.1
 
 export type NamedStreet = {
   /** Display string (name or ref). */
