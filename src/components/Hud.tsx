@@ -425,8 +425,8 @@ export function Hud({
             <strong>Track-up</strong> (map swings under a fixed car chevron —
             turn left, map swings right); tap the dial badge for North-up.
             GPS <strong>▢</strong> expands the dial + deeper zoom-out (tens of
-            km); <strong>Streets ON/OFF</strong> toggles live loaded ways on
-            the dial only (3D streets stay). Destination shows remaining
+            km); <strong>Streets ON/OFF</strong> toggles all live loaded ways on
+            the dial at every zoom (3D streets stay; overlays still add). Destination shows remaining
             distance; expand <strong>Next turn</strong> for the cue.
           </p>
         </form>

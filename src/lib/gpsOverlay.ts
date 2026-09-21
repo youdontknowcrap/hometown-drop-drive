@@ -12,7 +12,7 @@
  * on failure, let the blue route + majors carry the regional overview.
  *
  * Dual-duty: close zoom = live load cue; far/expanded = overlay cartography
- * (see keepLiveWayAtZoom / preferOverlayCartography). Jobs must not fight.
+ * (overlays are additive; live ways are toggle-only). Jobs must not fight.
  */
 import { metersPerDegree, type LatLng } from './geo'
 import { overpassInterpreter, nominatimSearch } from './osmApi'
@@ -226,10 +226,14 @@ out geom;`
 }
 
 /**
- * Dual-duty GPS dial (Forge / Joey):
- *   CLOSE zoom  — live loaded streets = stream **load heartbeat**
- *   FAR / expanded — cartography overlays (majors, lakes, state); do NOT
- *                    paint local residential spaghetti that fights the overview.
+ * GPS dial layers (Joey playtest):
+ *   Live streets ON → paint **all** loaded/active ways at every zoom (expand
+ *   + deep zoom-out). Overlays (majors / lakes / state) ADD at far zoom —
+ *   they must not replace or hide the live set.
+ *   Live streets OFF → hide live ways only; route + overlays still draw.
+ *
+ * keepLiveWayAtZoom / preferOverlayCartography remain as helpers but GpsDash
+ * no longer culls with them (reverted far-zoom residential strip).
  *
  * Thresholds are view-meters across the dial (compact or expanded).
  */
@@ -262,12 +266,12 @@ export function isMajorHighway(highway: string): boolean {
 }
 
 /**
- * Which live (streamed) ways to stroke at this zoom.
+ * Legacy zoom cull (unused by GpsDash after “show ALL roads” playtest).
+ * Kept for experiments / callers that still want majors-only far accents.
  *
- * CLOSE (< GPS_CLOSE_ZOOM_M): all — load heartbeat.
- * MID: drop service/dirt/foot — keep residential so tiles still "breathe."
- * FAR (>= GPS_FAR_ZOOM_M): majors only as a thin accent while overlay loads;
- *   GpsDash may skip live paint entirely once overlay majors are present.
+ * CLOSE (< GPS_CLOSE_ZOOM_M): all.
+ * MID: drop service/dirt/foot — keep residential.
+ * FAR (>= GPS_FAR_ZOOM_M): majors only.
  */
 export function keepLiveWayAtZoom(highway: string, viewMeters: number): boolean {
   const h = highway.toLowerCase()
@@ -287,7 +291,10 @@ export function keepLiveWayAtZoom(highway: string, viewMeters: number): boolean 
   return isMajorHighway(h)
 }
 
-/** Prefer overlay cartography over live mesh at this zoom (or expanded). */
+/**
+ * Legacy: prefer overlay cartography over live mesh (UNUSED by GpsDash —
+ * overlays are additive only; live ways stay when Streets ON).
+ */
 export function preferOverlayCartography(
   viewMeters: number,
   expanded: boolean,
