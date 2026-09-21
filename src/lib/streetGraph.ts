@@ -28,7 +28,11 @@ const SAMPLE_SPACING_M = 22
 /** Skip near-duplicate output vertices. */
 const OUT_MIN_SEP_M = 2.5
 /** A* hop budget — keep cheap for per-stream replans. */
-const ASTAR_MAX_EXPANSIONS = 2_400
+const ASTAR_MAX_EXPANSIONS = 1_200
+/** Cap densified samples so a long OSRM line can't O(n·segs) freeze the tab. */
+const MAX_ALIGN_SAMPLES = 72
+/** Default soft wall-clock budget (ms) when callers pass AlignOptions. */
+const DEFAULT_TIME_BUDGET_MS = 6
 
 export type LoadedWayPoly = {
   points: XzPoint[]
@@ -290,32 +294,77 @@ function dijkstraPoly(
   return pts
 }
 
+export type AlignOptions = {
+  /**
+   * Soft wall-clock budget (ms). When exceeded, remaining samples are copied
+   * raw (no Dijkstra hops) so the tab stays responsive. Callers should also
+   * idle-defer via routeAlignScheduler — budget is a belt, not a license for
+   * sync useMemo on every tile.
+   */
+  timeBudgetMs?: number
+}
+
 /**
  * Align a guidance polyline (OSRM / straight fallback, world XZ) onto the
  * loaded street graph. Returns a driven path AP + GPS + guidance share.
  *
  * If the graph is empty / too sparse, returns a copy of `rawPath` so the toy
  * still shows a blue line and AP can follow something.
+ *
+ * LEARNING — main-thread budget:
+ *   Snap is O(samples × segs). A fat tile ring + long OSRM line can hitch for
+ *   tens–hundreds of ms if run in the React commit that also applies Road
+ *   meshes → “Page Unresponsive”. Prefer createRouteAlignScheduler; pass
+ *   timeBudgetMs as a hard soft-cap when you must call this directly.
  */
 export function alignRouteToLoadedWays(
   rawPath: XzPoint[],
   ways: LoadedWayPoly[],
+  options: AlignOptions = {},
 ): XzPoint[] {
   if (rawPath.length < 2) return rawPath.slice()
 
   const usable = ways.filter((w) => w.points.length >= 2)
   if (usable.length === 0) return rawPath.map((p) => [p[0], 0, p[2]] as XzPoint)
 
+  const t0 = performance.now()
+  const budget = options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS
+  const overBudget = () => performance.now() - t0 >= budget
+
   const graph = buildStreetGraph(usable)
   if (graph.segs.length === 0) {
     return rawPath.map((p) => [p[0], 0, p[2]] as XzPoint)
   }
+  if (overBudget()) {
+    return rawPath.map((p) => [p[0], 0, p[2]] as XzPoint)
+  }
 
-  const samples = densifyPolyline(rawPath, SAMPLE_SPACING_M)
+  let samples = densifyPolyline(rawPath, SAMPLE_SPACING_M)
+  if (samples.length > MAX_ALIGN_SAMPLES) {
+    // Keep endpoints; stride the middle so long routes stay cheap.
+    const kept: XzPoint[] = [samples[0]]
+    const step = Math.ceil(samples.length / MAX_ALIGN_SAMPLES)
+    for (let i = step; i < samples.length - 1; i += step) {
+      kept.push(samples[i])
+    }
+    kept.push(samples[samples.length - 1])
+    samples = kept
+  }
+
   const out: XzPoint[] = []
   let lastNodeId: string | null = null
 
-  for (const s of samples) {
+  for (let si = 0; si < samples.length; si++) {
+    const s = samples[si]
+    if (overBudget()) {
+      // Bail: append remaining densified points raw — still a driveable line.
+      for (let j = si; j < samples.length; j++) {
+        pushUnique(out, samples[j][0], samples[j][2])
+      }
+      lastNodeId = null
+      break
+    }
+
     const hit = snapToGraph(graph, s[0], s[2])
     if (!hit) {
       // Still loading under this sample — keep raw so the corridor progresses.
@@ -323,7 +372,7 @@ export function alignRouteToLoadedWays(
       continue
     }
 
-    if (lastNodeId && lastNodeId !== hit.nodeId) {
+    if (lastNodeId && lastNodeId !== hit.nodeId && !overBudget()) {
       // Prefer a short on-graph hop so we stay on centerlines between snaps.
       const hop = dijkstraPoly(graph, lastNodeId, hit.nodeId)
       if (hop && hop.length > 0) {
@@ -336,7 +385,10 @@ export function alignRouteToLoadedWays(
           px = p[0]
           pz = p[2]
         }
-        const crow = Math.hypot(hit.x - (out.at(-1)?.[0] ?? hit.x), hit.z - (out.at(-1)?.[2] ?? hit.z))
+        const crow = Math.hypot(
+          hit.x - (out.at(-1)?.[0] ?? hit.x),
+          hit.z - (out.at(-1)?.[2] ?? hit.z),
+        )
         if (hopLen <= Math.max(80, crow * 2.8 + 40)) {
           for (const p of hop) pushUnique(out, p[0], p[2])
         }
@@ -349,15 +401,19 @@ export function alignRouteToLoadedWays(
 
   // Ensure destination end is represented (snap last raw point if possible).
   const end = rawPath[rawPath.length - 1]
-  const endHit = snapToGraph(graph, end[0], end[2], SNAP_MAX_M * 1.4)
-  if (endHit) {
-    if (lastNodeId && lastNodeId !== endHit.nodeId) {
-      const hop = dijkstraPoly(graph, lastNodeId, endHit.nodeId)
-      if (hop) {
-        for (const p of hop) pushUnique(out, p[0], p[2])
+  if (!overBudget()) {
+    const endHit = snapToGraph(graph, end[0], end[2], SNAP_MAX_M * 1.4)
+    if (endHit) {
+      if (lastNodeId && lastNodeId !== endHit.nodeId) {
+        const hop = dijkstraPoly(graph, lastNodeId, endHit.nodeId)
+        if (hop) {
+          for (const p of hop) pushUnique(out, p[0], p[2])
+        }
       }
+      pushUnique(out, endHit.x, endHit.z)
+    } else {
+      pushUnique(out, end[0], end[2])
     }
-    pushUnique(out, endHit.x, endHit.z)
   } else {
     pushUnique(out, end[0], end[2])
   }

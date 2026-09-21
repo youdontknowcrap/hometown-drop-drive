@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type MutableRefObject } from 'react'
+import { Suspense, useEffect, useMemo, useRef, type MutableRefObject } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
 import { RigidBody, type RapierRigidBody } from '@react-three/rapier'
@@ -271,6 +271,16 @@ useGLTF.preload(SEDAN_SPORTS)
  * Primary fix: inset + skip road-kissing solids (Buildings / osmBuildings).
  * WEDGE_* below is the escape hatch if still jammed against a real mass.
  */
+/**
+ * LEARNING — remount guard (module scope, survives React remount):
+ *   R3F Canvas wraps children in Suspense. If anything above Car suspends
+ *   (or a long main-thread freeze recovers), Car remounts and useRef(0) would
+ *   zero speed + useEffect([spawnKey]) would re-fire even when spawnKey is
+ *   unchanged → speed→0 + FollowCam intro. Track last Drop key here so a
+ *   same-Drop remount RESTORES from carPose instead of wiping authored state.
+ */
+let lastSpeedResetSpawnKey: number | null = null
+
 export function Car({
   keys,
   path,
@@ -352,6 +362,22 @@ export function Car({
    *   touch speed, steer, or odometer.
    */
   useEffect(() => {
+    if (lastSpeedResetSpawnKey === spawnKey) {
+      // Same Drop, Car remounted (Suspense / freeze recovery) — restore speed
+      // + brain flags from carPose; do NOT replay Drop zeroing.
+      signedMph.current = carPose.speedMph
+      carPose.elevMsl = heightGrid.spawnElevMsl
+      prevXZ.current = { x: carPose.x, z: carPose.z }
+      odometer.current = {
+        x: carPose.x,
+        z: carPose.z,
+        acc: 0,
+        t: 0,
+        last: carPose.metersLastSecond,
+      }
+      return
+    }
+    lastSpeedResetSpawnKey = spawnKey
     signedMph.current = 0
     steerAngle.current = 0
     wasOnRoad.current = true
@@ -668,7 +694,10 @@ export function Car({
       gravityScale={0}
     >
       <group name="player-car">
-        <KenneySportsSedan paintHex={paintHex} />
+        {/* Nested Suspense: GLTF must never bubble to Canvas Suspense (Joey remount lock). */}
+        <Suspense fallback={null}>
+          <KenneySportsSedan paintHex={paintHex} />
+        </Suspense>
       </group>
     </RigidBody>
   )

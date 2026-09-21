@@ -40,6 +40,11 @@ type GpsDashProps = {
    */
   liveStreetsOn?: boolean
   onLiveStreetsOn?: (on: boolean) => void
+  /**
+   * Drop center still loading — MUST NOT fire regional Overpass (competes
+   * with center-tile streets on the critical path → slow Drop / main freeze).
+   */
+  streamBusy?: boolean
 }
 
 /** Compact dial size (CSS + backing store). Expanded uses SIZE_EXPANDED. */
@@ -154,6 +159,7 @@ export function GpsDash({
   guidanceActive = false,
   liveStreetsOn = true,
   onLiveStreetsOn,
+  streamBusy = false,
 }: GpsDashProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const coordRef = useRef<HTMLParagraphElement>(null)
@@ -220,7 +226,10 @@ export function GpsDash({
   namedWaysRef.current = namedWays
 
   // Regional overlay: fetch when zoomed out / expanded. Debounced on center.
+  // LEARNING — never compete with Drop center Overpass (streamBusy): overlay
+  // parse + Nominatim reverse can freeze / starve the fast Drop path.
   useEffect(() => {
+    if (streamBusy) return
     if (!wantsRegionalOverlay(viewMeters) && !expanded) {
       return
     }
@@ -229,21 +238,23 @@ export function GpsDash({
     const center = carPose.ready
       ? localToLatLng(carPose.x, carPose.z, origin)
       : origin
+    // Longer debounce after Drop/origin so center tile + neighbors go first.
     const t = window.setTimeout(() => {
       void fetchGpsOverlay(center, radius).then((data) => {
         if (cancelled) return
         overlayRef.current = data
         setOverlayTick((n) => n + 1)
       })
-    }, 280)
+    }, 900)
     return () => {
       cancelled = true
       window.clearTimeout(t)
     }
-  }, [viewMeters, expanded, origin.lat, origin.lng])
+  }, [viewMeters, expanded, origin.lat, origin.lng, streamBusy])
 
   // Re-fetch occasionally as the car drifts into a new coarse cell.
   useEffect(() => {
+    if (streamBusy) return
     if (!wantsRegionalOverlay(viewMeters) && !expanded) return
     const id = window.setInterval(() => {
       const originNow = originRef.current
@@ -257,7 +268,7 @@ export function GpsDash({
       })
     }, 45_000)
     return () => window.clearInterval(id)
-  }, [expanded, viewMeters])
+  }, [expanded, viewMeters, streamBusy])
 
   useEffect(() => {
     const canvas = canvasRef.current

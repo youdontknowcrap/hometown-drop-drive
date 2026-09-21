@@ -20,10 +20,8 @@ import {
 } from './lib/weather'
 import { DEFAULT_PAINT } from './components/Car'
 import { autopilotControl } from './lib/autopilot'
-import {
-  alignRouteToLoadedWays,
-  loadedWaysFingerprint,
-} from './lib/streetGraph'
+import { loadedWaysFingerprint } from './lib/streetGraph'
+import { createRouteAlignScheduler } from './lib/routeAlignScheduler'
 
 const DEFAULT_DROP = '235 N China Lake Blvd, Ridgecrest, CA'
 const DEFAULT_DEST = 'Eastern Sierra Blvd, Ridgecrest, CA'
@@ -130,9 +128,24 @@ export default function App() {
   // working; ways always come from active tiles only.
   // JOEY LOCK: streamVersion must NOT remount Car / FollowCam / Scene — only
   // dropNonce does (via routeVersion below). Streaming = additive mesh/data.
+  // Origin object identity churned every emit — only commit when lat/lng/label
+  // actually change so Scene elev reset + GpsDash overlay deps stay quiet.
   useEffect(() => {
     if (!stream.streaming && stream.busy) return
-    setWorld(stream.world)
+    setWorld((prev) => {
+      const next = stream.world
+      if (
+        prev.origin.lat === next.origin.lat &&
+        prev.origin.lng === next.origin.lng &&
+        prev.dropLabel === next.dropLabel &&
+        prev.message === next.message &&
+        prev.source === next.source &&
+        prev.wayCount === next.wayCount
+      ) {
+        return prev
+      }
+      return next
+    })
   }, [stream.world, stream.streamVersion, stream.streaming, stream.busy])
 
   const onDrop = useCallback(async () => {
@@ -238,41 +251,95 @@ export default function App() {
   const localWays = useMemo(
     // HARD GPS RULE: only active (Scene-mounted) ways — never prefetch cache.
     // Keep highway/name so the dial can filter by zoom + label turns.
+    // Depend on origin lat/lng (not object identity) so stream emits that only
+    // refresh wayCount/message don't rebuild polylines + fingerprint.
     () =>
       stream.activeWays.map((w) => ({
         points: polylineToLocal(w.points, world.origin),
         highway: w.highway,
         name: w.name ?? w.ref,
       })),
-    [stream.activeWays, world.origin],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- origin lat/lng
+    [stream.activeWays, world.origin.lat, world.origin.lng],
   )
 
   /** Raw OSRM / straight polyline in world XZ (before loaded-street snap). */
   const routeLocalRaw = useMemo(() => {
     if (!nav) return [] as Array<[number, number, number]>
     return polylineToLocal(nav.polyline, world.origin)
-  }, [nav, world.origin])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- origin lat/lng
+  }, [nav, world.origin.lat, world.origin.lng])
 
   /**
    * ONE PATH TRUTH (Forge): driven route = OSRM snapped onto loaded active
    * way centerlines. AP, GPS blue line, turn guidance, and off-course all
    * share this polyline. Replans when tiles stream (fingerprint changes).
+   *
+   * LEARNING — never sync-align in useMemo on fingerprint:
+   *   buildStreetGraph + snap + Dijkstra on every tile froze the main thread
+   *   (Chrome “Page Unresponsive”) and hitch-remounted Canvas Suspense →
+   *   speed→0 + FollowCam intro. Paint raw immediately; coalesce + idle-align
+   *   via createRouteAlignScheduler (time-budgeted). Does NOT remount Car.
    */
   const waysFingerprint = useMemo(
     () => loadedWaysFingerprint(localWays),
     [localWays],
   )
 
-  const routeLocal = useMemo(() => {
-    if (routeLocalRaw.length < 2) return [] as Array<[number, number, number]>
-    return alignRouteToLoadedWays(routeLocalRaw, localWays)
-    // waysFingerprint stands in for localWays geometry identity
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeLocalRaw, waysFingerprint])
+  const [routeLocal, setRouteLocal] = useState<
+    Array<[number, number, number]>
+  >([])
+  const alignSchedulerRef = useRef<ReturnType<
+    typeof createRouteAlignScheduler
+  > | null>(null)
+  const localWaysRef = useRef(localWays)
+  localWaysRef.current = localWays
 
   useEffect(() => {
-    navLocalRef.current = routeLocal
-  }, [routeLocal])
+    const sched = createRouteAlignScheduler({
+      coalesceMs: 140,
+      timeBudgetMs: 6,
+    })
+    alignSchedulerRef.current = sched
+    return () => {
+      sched.dispose()
+      alignSchedulerRef.current = null
+    }
+  }, [])
+
+  const navKey = useMemo(() => {
+    if (!nav) return 'none'
+    return `${nav.destination.lat.toFixed(5)},${nav.destination.lng.toFixed(5)},${nav.polyline.length}`
+  }, [nav])
+  const prevNavKeyRef = useRef(navKey)
+
+  useEffect(() => {
+    if (routeLocalRaw.length < 2) {
+      setRouteLocal([])
+      navLocalRef.current = []
+      prevNavKeyRef.current = navKey
+      return
+    }
+    const fp = `${navKey}|${waysFingerprint}`
+    const navChanged = prevNavKeyRef.current !== navKey
+    prevNavKeyRef.current = navKey
+    alignSchedulerRef.current?.schedule({
+      rawPath: routeLocalRaw,
+      ways: localWaysRef.current,
+      fingerprint: fp,
+      // New destination only — stream replans keep prior aligned until idle.
+      onRaw: navChanged
+        ? (raw) => {
+            setRouteLocal(raw)
+            navLocalRef.current = raw
+          }
+        : undefined,
+      onAligned: (aligned) => {
+        setRouteLocal(aligned)
+        navLocalRef.current = aligned
+      },
+    })
+  }, [routeLocalRaw, waysFingerprint, navKey])
 
   // Debounced off-course → OSRM reroute from the car to the same destination.
   useEffect(() => {
@@ -403,6 +470,7 @@ export default function App() {
         guidanceActive={hasDestination}
         liveStreetsOn={gpsLiveStreetsOn}
         onLiveStreetsOn={setGpsLiveStreetsOn}
+        streamBusy={stream.busy}
       />
     </div>
   )
