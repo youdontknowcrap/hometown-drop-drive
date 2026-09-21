@@ -4,8 +4,6 @@ import { latLngToLocal, localToLatLng, type LatLng } from '../lib/geo'
 import type { XzPoint } from '../lib/roadMesh'
 import {
   fetchGpsOverlay,
-  keepLiveWayAtZoom,
-  preferOverlayCartography,
   wantsRegionalOverlay,
   type GpsOverlayData,
   type OverlayWay,
@@ -409,31 +407,20 @@ export function GpsDash({
       }
 
       // --- Live loaded streets (load heartbeat) — toggleable ---
-      // Dual-duty: close zoom paints the stream cue; far/expanded prefers
-      // overlay majors + route + markers. If overlay majors are ready, skip
-      // live paint entirely so residential spaghetti cannot fight cartography.
-      const overlayCartography = preferOverlayCartography(
-        viewM,
-        expandedRef.current,
-      )
-      const overlayHasMajors = (ov?.majors.length ?? 0) > 0
-      const paintLive =
-        liveOn && !(overlayCartography && overlayHasMajors)
-      if (paintLive) {
+      // LEARNING (Joey): when Streets ON, paint ALL loaded/active ways at every
+      // zoom (expand + deep zoom-out included). Overlays (majors/lakes/state)
+      // still ADD at far zoom — they must not replace/hide the live street set.
+      // OFF still hides live ways. No preferOverlayCartography / keepLiveWayAtZoom
+      // cull that strips residential when zoomed out.
+      if (liveOn) {
         const liveWays = waysRef.current
         for (const w of liveWays) {
-          if (!keepLiveWayAtZoom(w.highway, viewM)) continue
           const major =
             w.highway === 'motorway' ||
             w.highway === 'trunk' ||
             w.highway === 'primary' ||
             w.highway === 'secondary'
-          // Far without overlay yet: majors-only accent (keepLiveWayAtZoom).
-          ctx.strokeStyle = overlayCartography
-            ? major
-              ? '#a8c0ce'
-              : '#5c7a8a'
-            : '#5c7a8a'
+          ctx.strokeStyle = major ? '#a8c0ce' : '#5c7a8a'
           ctx.lineWidth = major ? 1.6 : 1.15
           strokePoly(w.points, cx, cz, yaw, trackUp, mPerPx, half)
         }
@@ -577,8 +564,8 @@ export function GpsDash({
           onClick={() => onLiveStreetsOn?.(!liveStreetsOn)}
           title={
             liveStreetsOn
-              ? 'Hide live loaded streets on the dial (majors/route/overlays stay)'
-              : 'Show live loaded streets on the dial (stream load cue)'
+              ? 'Hide live loaded streets on the dial (route/overlays stay)'
+              : 'Show all live loaded streets on the dial (every zoom)'
           }
           aria-label={
             liveStreetsOn

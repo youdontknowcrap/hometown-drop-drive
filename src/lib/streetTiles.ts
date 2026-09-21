@@ -133,6 +133,13 @@ export const MAX_IN_FLIGHT = 1
 /** Minimum gap between starting Overpass tile requests. */
 export const OVERPASS_GAP_MS = 750
 
+/**
+ * Idle retry backoff for soft-failed tiles (TLS / proxy blips).
+ * Cap so a dead interpreter doesn’t hammer forever during a long drive.
+ */
+export const OVERPASS_RETRY_BASE_MS = 1_200
+export const OVERPASS_RETRY_MAX_MS = 30_000
+
 export type TileKey = string // `${tx},${tz}`
 
 export type TileStatus = 'empty' | 'loading' | 'cached' | 'active' | 'error'
@@ -146,6 +153,19 @@ export type StreetTile = {
   /** OSM building AABBs for this tile (empty until deferred fetch returns). */
   buildings: BuildingBox[]
   error?: string
+  /**
+   * Soft-fail: performance.now() until which we must NOT re-enqueue.
+   * LEARNING — without this, every updateCar/reconcile stampedes retries on
+   * TLS blips and the missing-tile flicker reads as drive “jerkiness.”
+   */
+  retryAfterMs?: number
+  /** Consecutive Overpass failures for exponential idle retry. */
+  failCount?: number
+  /**
+   * True while we still show last ways but want an idle Overpass refresh
+   * (TLS blip). Must NOT flip status to loading — that would unmount Road.
+   */
+  stale?: boolean
 }
 
 /** Axis-aligned bounds of all *active* tiles in local meters. */
@@ -350,6 +370,9 @@ export class StreetTileStreamer {
   private gen = 0
   /** After center Drop paint, neighbors may fill (once). */
   private neighborsStarted = false
+  /** Scheduled idle pump for soft-failed tiles (cleared on dispose). */
+  private retryTimer: ReturnType<typeof setTimeout> | null = null
+  private retryWakeAt: number | null = null
   /**
    * HUD Buildings ON/OFF. When false: skip Overpass building fetches + empty
    * activeBuildings so streets/elev get the network + CPU (Joey A/B).
@@ -435,6 +458,11 @@ export class StreetTileStreamer {
     this.cachedAlignWays = []
     this.cachedAlignKey = ''
     this.listeners.clear()
+    if (this.retryTimer != null) {
+      clearTimeout(this.retryTimer)
+      this.retryTimer = null
+    }
+    this.retryWakeAt = null
   }
 
   snapshot(): StreamSnapshot {
@@ -843,6 +871,15 @@ export class StreetTileStreamer {
     ) {
       return
     }
+    // Soft-fail cooldown — skip until idle retry window opens.
+    if (
+      tile.status === 'error' &&
+      tile.retryAfterMs != null &&
+      performance.now() < tile.retryAfterMs
+    ) {
+      this.scheduleIdleRetry(tile.retryAfterMs - performance.now())
+      return
+    }
     this.queue.push(key)
   }
 
@@ -863,6 +900,14 @@ export class StreetTileStreamer {
         tile.status === 'cached' ||
         tile.status === 'loading'
       ) {
+        continue
+      }
+      if (
+        tile.status === 'error' &&
+        tile.retryAfterMs != null &&
+        now < tile.retryAfterMs
+      ) {
+        this.scheduleIdleRetry(tile.retryAfterMs - now)
         continue
       }
       this.startFetch(tile)
@@ -892,6 +937,10 @@ export class StreetTileStreamer {
         const live = this.tiles.get(tile.key)
         if (!live) return
         live.ways = ways
+        live.failCount = 0
+        live.retryAfterMs = undefined
+        live.error = undefined
+        live.stale = false
         // Promote against the speed-blended wantActive (corridor or circle).
         live.status = this.lastWantActive.has(live.key) ? 'active' : 'cached'
 
@@ -907,11 +956,137 @@ export class StreetTileStreamer {
         if (this.disposed || gen !== this.gen) return
         const live = this.tiles.get(tile.key)
         if (!live) return
-        live.status = 'error'
-        live.error = err instanceof Error ? err.message : 'tile fetch failed'
-        live.ways = []
-        live.buildings = []
+        this.applySoftFail(
+          live,
+          err instanceof Error ? err.message : 'tile fetch failed',
+        )
+      })
+      .finally(() => {
+        this.inFlight = Math.max(0, this.inFlight - 1)
+        this.pumpQueue()
+      })
+  }
+
+  /**
+   * Soft-fail a tile after Overpass TLS/proxy blip.
+   * LEARNING — if we already painted ways, KEEP status active/cached so
+   * Scene + GpsDash + elev morph do not hitch. Never clear last geometry.
+   * Empty tiles become `error` and retry later idle (skip, don’t block).
+   */
+  private applySoftFail(live: StreetTile, message: string) {
+    const fails = (live.failCount ?? 0) + 1
+    live.failCount = fails
+    live.error = message
+    const backoff = Math.min(
+      OVERPASS_RETRY_MAX_MS,
+      OVERPASS_RETRY_BASE_MS * 2 ** Math.min(fails - 1, 5),
+    )
+    live.retryAfterMs = performance.now() + backoff
+    if (live.ways.length > 0) {
+      // Stay painted — elev / mesh keep last tiles; refresh idle later.
+      live.stale = true
+      live.status = this.lastWantActive.has(live.key) ? 'active' : 'cached'
+      console.warn(
+        `[streetTiles] soft-fail ${live.key} (keep ${live.ways.length} ways, stay ${live.status}) · retry ~${Math.round(backoff)}ms · ${message}`,
+      )
+      this.emitMeta()
+    } else {
+      live.stale = false
+      live.status = 'error'
+      console.warn(
+        `[streetTiles] soft-fail ${live.key} (empty → skip) · retry ~${Math.round(backoff)}ms · ${message}`,
+      )
+      this.emit()
+    }
+    this.scheduleIdleRetry(backoff)
+  }
+
+  /**
+   * After a soft-fail, wake once backoff elapses — without blocking elev
+   * morph / rAF. Coalesces multiple fails into one timer.
+   */
+  private scheduleIdleRetry(delayMs: number) {
+    if (this.disposed) return
+    const wait = Math.max(50, delayMs)
+    const wakeAt = performance.now() + wait
+    if (
+      this.retryTimer != null &&
+      this.retryWakeAt != null &&
+      this.retryWakeAt <= wakeAt + 1
+    ) {
+      return
+    }
+    if (this.retryTimer != null) clearTimeout(this.retryTimer)
+    this.retryWakeAt = wakeAt
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null
+      this.retryWakeAt = null
+      if (this.disposed) return
+      const now = performance.now()
+      for (const tile of this.tiles.values()) {
+        const due =
+          tile.status === 'error' ||
+          (tile.stale === true && (tile.failCount ?? 0) > 0)
+        if (!due) continue
+        if (tile.retryAfterMs != null && now < tile.retryAfterMs) {
+          this.scheduleIdleRetry(tile.retryAfterMs - now)
+          continue
+        }
+        if (tile.stale && tile.ways.length > 0) {
+          this.refreshStaleTile(tile)
+        } else {
+          this.enqueue(tile.key)
+        }
+      }
+      this.pumpQueue()
+      this.emitMeta()
+    }, wait)
+  }
+
+  /**
+   * Re-fetch a painted soft-failed tile WITHOUT flipping to `loading`
+   * (loading would drop it from activeWays → Road unmount flicker).
+   */
+  private refreshStaleTile(tile: StreetTile) {
+    if (this.disposed || this.source === 'demo') return
+    if (this.inFlight >= MAX_IN_FLIGHT) {
+      this.scheduleIdleRetry(OVERPASS_GAP_MS)
+      return
+    }
+    const now = performance.now()
+    if (now - this.lastStartMs < OVERPASS_GAP_MS) {
+      this.scheduleIdleRetry(OVERPASS_GAP_MS - (now - this.lastStartMs))
+      return
+    }
+    this.inFlight += 1
+    this.lastStartMs = performance.now()
+    this.emitMeta()
+    const gen = this.gen
+    const bbox = tileToBbox(tile.tx, tile.tz, this.origin)
+    void mainFetchWays(bbox.south, bbox.west, bbox.north, bbox.east)
+      .then(async (ways) => {
+        if (this.disposed || gen !== this.gen) return
+        const live = this.tiles.get(tile.key)
+        if (!live) return
+        live.ways = ways
+        live.failCount = 0
+        live.retryAfterMs = undefined
+        live.error = undefined
+        live.stale = false
+        live.status = this.lastWantActive.has(live.key) ? 'active' : 'cached'
         this.emit()
+        if (this.buildingsEnabled && live.buildings.length === 0) {
+          await this.deferBuildings(live, bbox, gen)
+        }
+      })
+      .catch((err: unknown) => {
+        if (this.disposed || gen !== this.gen) return
+        const live = this.tiles.get(tile.key)
+        if (!live) return
+        this.applySoftFail(
+          live,
+          err instanceof Error ? err.message : 'tile refresh failed',
+        )
       })
       .finally(() => {
         this.inFlight = Math.max(0, this.inFlight - 1)

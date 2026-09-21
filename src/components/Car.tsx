@@ -278,6 +278,11 @@ useGLTF.preload(SEDAN_SPORTS)
  *   zero speed + useEffect([spawnKey]) would re-fire even when spawnKey is
  *   unchanged → speed→0 + FollowCam intro. Track last Drop key here so a
  *   same-Drop remount RESTORES from carPose instead of wiping authored state.
+ *
+ * LEARNING — mount at carPose on same-Drop remount:
+ *   RigidBody `position` prop is the Rapier mount translation. Remounting at
+ *   Drop spawn mid-drive teleports the body + looks like camera intro jitter.
+ *   When restoring, mount at carPose x/y/z / yaw so hitch ≠ teleport.
  */
 let lastSpeedResetSpawnKey: number | null = null
 
@@ -327,17 +332,32 @@ export function Car({
     x: number
     y: number
     z: number
+    yaw: number
   } | null>(null)
+  /** Same-Drop remount: prefer live carPose so RigidBody does not teleport to spawn. */
+  const restoringRemount =
+    lastSpeedResetSpawnKey === spawnKey && carPose.ready
   if (mountYRef.current?.key !== spawnKey) {
-    mountYRef.current = {
-      key: spawnKey,
-      x: spawn[0],
-      y: spawn[1],
-      z: spawn[2],
+    if (restoringRemount) {
+      mountYRef.current = {
+        key: spawnKey,
+        x: carPose.x,
+        y: carPose.y,
+        z: carPose.z,
+        yaw: carPose.yaw,
+      }
+    } else {
+      mountYRef.current = {
+        key: spawnKey,
+        x: spawn[0],
+        y: spawn[1],
+        z: spawn[2],
+        yaw: spawnYaw,
+      }
     }
   } else if (
-    mountYRef.current.x !== spawn[0] ||
-    mountYRef.current.z !== spawn[2]
+    !restoringRemount &&
+    (mountYRef.current.x !== spawn[0] || mountYRef.current.z !== spawn[2])
   ) {
     // Ways resolved for this Drop — adopt XZ + Y once. Never chase elev-only Y.
     mountYRef.current = {
@@ -345,6 +365,7 @@ export function Car({
       x: spawn[0],
       y: spawn[1],
       z: spawn[2],
+      yaw: spawnYaw,
     }
   }
 
@@ -364,7 +385,7 @@ export function Car({
   useEffect(() => {
     if (lastSpeedResetSpawnKey === spawnKey) {
       // Same Drop, Car remounted (Suspense / freeze recovery) — restore speed
-      // + brain flags from carPose; do NOT replay Drop zeroing.
+      // + brain flags from carPose; do NOT replay Drop zeroing / intro.
       signedMph.current = carPose.speedMph
       carPose.elevMsl = heightGrid.spawnElevMsl
       prevXZ.current = { x: carPose.x, z: carPose.z }
@@ -374,6 +395,14 @@ export function Car({
         acc: 0,
         t: 0,
         last: carPose.metersLastSecond,
+      }
+      // Keep cruise / AP across remount — hitch must not cancel drive policies.
+      brainState.current = {
+        ...defaultDriveBrainState(),
+        cruiseOn: carPose.cruiseOn,
+        cruiseMph: carPose.cruiseMph,
+        apOn: carPose.autopilotOn,
+        apTargetMph: carPose.autopilotTargetMph,
       }
       return
     }
@@ -452,7 +481,11 @@ export function Car({
         onRoad,
       },
       input,
-      { path },
+      {
+        path,
+        // AP off-asphalt safety: re-snap look-ahead onto loaded centerlines.
+        centerlineWays: roadSurfaceWays,
+      },
       brainState.current,
       dt,
       pedals,
@@ -494,8 +527,12 @@ export function Car({
 
     // --- Terrain follow: pin Y to height sample (relative to spawn elev).
     // Clearance tracks ROAD_Y_BIAS_M (roadHeights) so the body sits on asphalt.
+    // LEARNING — elev morph: sampleHeight already lerps via live.heights; still
+    // ease wantY so a settle edge / topology slide does not pop the body.
     let groundY = sampleHeight(heightGrid, tx, tz)
-    let wantY = groundY + CAR_CLEARANCE_M
+    let wantYTarget = groundY + CAR_CLEARANCE_M
+    const yLerp = 1 - Math.exp(-12 * Math.min(dt, 0.05))
+    let wantY = t.y + (wantYTarget - t.y) * yLerp
 
     // Leave-bump: half-sine lift so the curb thump reads even with Y pinned.
     if (leaveBumpT.current > 0 && !cmd.skipOffRoadPenalty) {
@@ -672,16 +709,20 @@ export function Car({
     carPose.ready = true
   })
 
-  // Mount Y is Drop-sticky (mountYRef); live terrain follow is useFrame wantY.
-  const mountY = mountYRef.current?.y ?? spawn[1]
+  // Mount pose is Drop-sticky (or carPose on same-Drop remount); live Y is useFrame.
+  const mount = mountYRef.current
+  const mountPos: [number, number, number] = mount
+    ? [mount.x, mount.y, mount.z]
+    : [spawn[0], spawn[1], spawn[2]]
+  const mountYaw = mount?.yaw ?? spawnYaw
 
   return (
     <RigidBody
       key={spawnKey}
       ref={body}
       colliders="cuboid"
-      position={[spawn[0], mountY, spawn[2]]}
-      rotation={[0, spawnYaw, 0]}
+      position={mountPos}
+      rotation={[0, mountYaw, 0]}
       friction={1.4}
       // Drive axis is kinematic from the controller; keep damping low so
       // Rapier contacts don't sap our authored speed.
