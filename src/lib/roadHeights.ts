@@ -33,7 +33,7 @@ export const CAR_CLEARANCE_M = ROAD_Y_BIAS_M + 0.2
 
 /**
  * Densify OSM centerlines to this fraction of heightGrid.cellSize before
- * draping. Tighter than 1× so chords follow 5× hills between coarse cells.
+ * draping. Tighter than 1× so chords follow real-relief hills between coarse cells.
  */
 export const ROAD_DENSIFY_CELL_FRAC = 0.5
 

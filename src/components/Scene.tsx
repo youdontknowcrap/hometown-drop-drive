@@ -28,12 +28,18 @@ import {
 import {
   flatHeightGrid,
   sampleHeight,
+  VERTICAL_EXAGGERATION,
   type HeightGrid,
 } from '../lib/terrarium'
-import { fetchElevationGrid, fetchFarElevationGrid } from '../lib/elevation'
 import { sunAt, sunLightPosition } from '../lib/sun'
 import type { WeatherLook } from '../lib/weather'
-import { PREFETCH_RING, TILE_M } from '../lib/streetTiles'
+import { PREFETCH_RING, TILE_M, type LoadedAabb } from '../lib/streetTiles'
+import {
+  tileLoaderUsesWorker,
+  workerFetchElevFar,
+  workerFetchElevNear,
+} from '../lib/tileLoaderClient'
+import { carPose } from '../lib/carPose'
 
 type SceneProps = {
   keys: MutableRefObject<DriveKeys>
@@ -65,7 +71,7 @@ type SceneProps = {
   /** When false (streaming), skip hard ~200 ft corridor walls. */
   hardContainment?: boolean
   /** Soft void edge — union of active tile AABBs (local meters). */
-  loadedAabb?: { minX: number; maxX: number; minZ: number; maxZ: number } | null
+  loadedAabb?: LoadedAabb | null
 }
 
 /**
@@ -192,59 +198,143 @@ export function Scene({
   const ambientIntensity = weather.ambientScale * (0.35 + 0.65 * sun.daylight)
 
   /**
-   * Elevation once per Drop (routeVersion), covering the prefetch footprint.
-   * LEARNING — do NOT depend on localWays / streamVersion: every tile activate
-   * used to refetch Terrarium + rebuild Ground + remount feel. Streaming streets
-   * stay additive; hills for the ~prefetch box are enough for a drive session.
+   * Sliding near height grid + far skyline (worker elev decode).
+   *
+   * LEARNING — worker vs main:
+   *   Terrarium PNG decode / Open-Meteo upsample run in the tile-loader worker.
+   *   Main only setState’s the HeightGrid. Ground rebuilds verts via useMemo;
+   *   Car / FollowCam keep spawnKey=routeVersion (Drop only) — elev swaps must
+   *   NOT remount the RigidBody or camera (Joey lock).
+   *
+   * Sliding window: refresh when active-tile AABB union changes so hills follow
+   * the drive. lockedSpawnElevMsl keeps relative heights stable across refreshes.
    */
+  const spawnElevLockRef = useRef<number | null>(null)
+  const elevGenRef = useRef(0)
+  const lastFarAtRef = useRef<{ x: number; z: number } | null>(null)
+
+  // Drop reset — clear elev lock so the new origin re-zeros honestly.
+  useEffect(() => {
+    spawnElevLockRef.current = null
+    lastFarAtRef.current = null
+    elevGenRef.current += 1
+    const span = TILE_M * (PREFETCH_RING + 1)
+    setHeightGrid(flatHeightGrid(0, 0, span * 2, 'Loading elevation…'))
+    setFarHeightGrid(null)
+    onTerrainMessage?.('Loading elevation (worker · Terrarium → Open-Meteo)…')
+    onFarTerrainMessage?.('Far terrain: loading…')
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Drop-only reset
+  }, [routeVersion, origin.lat, origin.lng])
+
+  // Near elev: debounce on loadedAabb so soft-edge growth streams hills in.
   useEffect(() => {
     let cancelled = false
-    // ±(PREFETCH_RING+1) tiles from Drop origin — warm elev before soft edge.
+    const gen = ++elevGenRef.current
     const span = TILE_M * (PREFETCH_RING + 1)
-    onTerrainMessage?.('Loading elevation (Terrarium → Open-Meteo)…')
-    onFarTerrainMessage?.('Far terrain: loading…')
-    setFarHeightGrid(null)
-
-    void fetchElevationGrid({
-      origin,
+    const aabb: LoadedAabb = loadedAabb ?? {
       minX: -span,
       maxX: span,
       minZ: -span,
       maxZ: span,
-      spawnX: spawn[0],
-      spawnZ: spawn[2],
-    }).then(async (grid) => {
-      if (cancelled) return
-      setHeightGrid(grid)
-      onTerrainMessage?.(grid.message)
+    }
 
-      // Far skyline only when near elev actually worked (flat = nowhere to hang mountains).
-      if (grid.source === 'flat') {
-        onFarTerrainMessage?.('Far terrain: skipped (near elev flat)')
-        return
-      }
-
-      const far = await fetchFarElevationGrid({
+    const timer = window.setTimeout(() => {
+      onTerrainMessage?.(
+        `Loading elevation (sliding · relief ${VERTICAL_EXAGGERATION}×)…`,
+      )
+      void workerFetchElevNear({
         origin,
+        minX: aabb.minX,
+        maxX: aabb.maxX,
+        minZ: aabb.minZ,
+        maxZ: aabb.maxZ,
         spawnX: spawn[0],
         spawnZ: spawn[2],
-        spawnElevMsl: grid.spawnElevMsl,
+        lockedSpawnElevMsl: spawnElevLockRef.current ?? undefined,
+      }).then(async (grid) => {
+        if (cancelled || gen !== elevGenRef.current) return
+        if (grid.source !== 'flat' && spawnElevLockRef.current == null) {
+          spawnElevLockRef.current = grid.spawnElevMsl
+        }
+        // Additive data swap — no remount keys touched.
+        setHeightGrid(grid)
+        const lane = tileLoaderUsesWorker() ? 'worker' : 'main'
+        onTerrainMessage?.(
+          `${grid.message} · ${lane} · near grid follows tiles`,
+        )
+
+        if (grid.source === 'flat') {
+          onFarTerrainMessage?.('Far terrain: skipped (near elev flat)')
+          return
+        }
+
+        const cx = carPose.ready ? carPose.x : spawn[0]
+        const cz = carPose.ready ? carPose.z : spawn[2]
+        lastFarAtRef.current = { x: cx, z: cz }
+        const far = await workerFetchElevFar({
+          origin,
+          spawnX: cx,
+          spawnZ: cz,
+          spawnElevMsl: spawnElevLockRef.current ?? grid.spawnElevMsl,
+        })
+        if (cancelled || gen !== elevGenRef.current) return
+        if (far) {
+          setFarHeightGrid(far)
+          onFarTerrainMessage?.(far.message)
+        } else {
+          onFarTerrainMessage?.('Far terrain: unavailable')
+        }
       })
-      if (cancelled) return
-      if (far) {
-        setFarHeightGrid(far)
-        onFarTerrainMessage?.(far.message)
-      } else {
-        onFarTerrainMessage?.('Far terrain: unavailable')
-      }
-    })
+    }, 400)
 
     return () => {
       cancelled = true
+      window.clearTimeout(timer)
     }
-    // spawn is Drop-sticky (see spawnRef); origin + routeVersion define a Drop.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- Joey lock: no localWays
-  }, [origin.lat, origin.lng, routeVersion, onTerrainMessage, onFarTerrainMessage])
+    // spawn Drop-sticky; AABB edges drive the sliding window — not streamVersion.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    origin.lat,
+    origin.lng,
+    routeVersion,
+    loadedAabb?.minX,
+    loadedAabb?.maxX,
+    loadedAabb?.minZ,
+    loadedAabb?.maxZ,
+    onTerrainMessage,
+    onFarTerrainMessage,
+  ])
+
+  // Far elev recenters as the car drives so distant relief becomes near.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (!carPose.ready) return
+      const lock = spawnElevLockRef.current
+      if (lock == null) return
+      const last = lastFarAtRef.current
+      const dx = last ? carPose.x - last.x : Infinity
+      const dz = last ? carPose.z - last.z : Infinity
+      // ~1.5 km travel before re-centering the ~12 km skyline ring.
+      if (Math.hypot(dx, dz) < 1500) return
+      const cx = carPose.x
+      const cz = carPose.z
+      lastFarAtRef.current = { x: cx, z: cz }
+      const gen = elevGenRef.current
+      void workerFetchElevFar({
+        origin,
+        spawnX: cx,
+        spawnZ: cz,
+        spawnElevMsl: lock,
+      }).then((far) => {
+        if (gen !== elevGenRef.current) return
+        if (far) {
+          setFarHeightGrid(far)
+          onFarTerrainMessage?.(far.message + ' · follows car')
+        }
+      })
+    }, 2500)
+    return () => window.clearInterval(id)
+  }, [origin.lat, origin.lng, routeVersion, onFarTerrainMessage])
 
   // Drape the blue GPS line onto the same height samples as the asphalt.
   const drapedRoute = useMemo(

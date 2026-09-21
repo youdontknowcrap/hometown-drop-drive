@@ -56,16 +56,14 @@ const MAX_TILES = 16
 const GRID_RES = 96
 
 /**
- * Vertical exaggeration applied to *relative* heights only.
+ * Vertical scale on *relative* heights (Joey lock — fidelity, not arcade).
  *
- * WHY ~5× (arcade, not survey)? Basin towns like Ridgecrest sit in a broad
- * valley — real relief over a ~3 km Drop is often only tens of meters. At 1:1
- * that reads as a flat parking lot in a toy chase cam. ~5× makes near hills
- * pop without needing military DEM fidelity. Absolute MSL (spawnElevMsl) and
- * the live speedo altitude stay honest: undo this factor when reporting meters
- * above sea level (see relativeHeightToMsl / carPose.elevMsl).
+ * LEARNING: 1× means 1 m of real relief = 1 m in the playfield. Basin towns
+ * look subtle in a chase cam, but GPS / speedo MSL and the mesh stay honest.
+ * Relative-to-spawn still zeros Drop near y≈0; we do NOT stretch hills.
+ * relativeHeightToMsl undoes this factor (no-op while it is 1).
  */
-export const VERTICAL_EXAGGERATION = 5
+export const VERTICAL_EXAGGERATION = 1
 
 export type HeightGrid = {
   /** Local-X of the grid's -X/−Z corner (meters). */
@@ -117,7 +115,7 @@ export function sampleHeight(grid: HeightGrid, x: number, z: number): number {
 }
 
 
-/** Undo arcade exaggeration → absolute MSL meters (HUD / speedo honesty). */
+/** Undo VERTICAL_EXAGGERATION → absolute MSL meters (HUD / speedo honesty). */
 export function relativeHeightToMsl(grid: HeightGrid, relY: number): number {
   return grid.spawnElevMsl + relY / VERTICAL_EXAGGERATION
 }
@@ -192,36 +190,38 @@ type TileElev = {
  * createImageBitmap on certain blob types; the <img> path still works
  * through the same Vite /api/terrarium proxy.
  */
+/**
+ * PNG blob → ImageData. Works on the main thread AND in a Web Worker.
+ *
+ * LEARNING — worker vs main:
+ *   Workers have no `document`, so we use OffscreenCanvas there. Main can use
+ *   either OffscreenCanvas or a DOM canvas. createImageBitmap is available in
+ *   both — that is the shared decode entry. Heavy PNG inflate + RGB→elev stays
+ *   off the render/input thread when Scene posts elev jobs to the tile worker.
+ */
 async function blobToImageData(blob: Blob): Promise<ImageData> {
-  const canvas = document.createElement('canvas')
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })
-  if (!ctx) throw new Error('2D canvas unavailable for Terrarium decode')
-
+  const bmp = await createImageBitmap(blob)
   try {
-    const bmp = await createImageBitmap(blob)
-    canvas.width = bmp.width
-    canvas.height = bmp.height
-    ctx.drawImage(bmp, 0, 0)
-    const img = ctx.getImageData(0, 0, bmp.width, bmp.height)
-    bmp.close()
-    return img
-  } catch {
-    // Fallback: decode via <img> (same bytes, different browser decoder path).
-    const url = URL.createObjectURL(blob)
-    try {
-      const imgEl = await new Promise<HTMLImageElement>((resolve, reject) => {
-        const im = new Image()
-        im.onload = () => resolve(im)
-        im.onerror = () => reject(new Error('HTMLImageElement failed to decode Terrarium PNG'))
-        im.src = url
-      })
-      canvas.width = imgEl.naturalWidth
-      canvas.height = imgEl.naturalHeight
-      ctx.drawImage(imgEl, 0, 0)
-      return ctx.getImageData(0, 0, canvas.width, canvas.height)
-    } finally {
-      URL.revokeObjectURL(url)
+    // OffscreenCanvas is the worker-safe path; DOM canvas is the fallback.
+    if (typeof OffscreenCanvas !== 'undefined') {
+      const canvas = new OffscreenCanvas(bmp.width, bmp.height)
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      if (!ctx) throw new Error('OffscreenCanvas 2D unavailable for Terrarium decode')
+      ctx.drawImage(bmp, 0, 0)
+      return ctx.getImageData(0, 0, bmp.width, bmp.height)
     }
+    if (typeof document !== 'undefined') {
+      const canvas = document.createElement('canvas')
+      canvas.width = bmp.width
+      canvas.height = bmp.height
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      if (!ctx) throw new Error('2D canvas unavailable for Terrarium decode')
+      ctx.drawImage(bmp, 0, 0)
+      return ctx.getImageData(0, 0, bmp.width, bmp.height)
+    }
+    throw new Error('No canvas surface for Terrarium decode')
+  } finally {
+    bmp.close()
   }
 }
 
@@ -312,6 +312,11 @@ export type TerrainFetchOpts = {
   spawnX: number
   spawnZ: number
   zoom?: number
+  /**
+   * Sliding-window lock: reuse Drop’s first successful MSL so near-grid
+   * refreshes don’t re-zero heights and bump the car as tiles stream.
+   */
+  lockedSpawnElevMsl?: number
 }
 
 /**
@@ -441,19 +446,24 @@ export async function fetchHeightGrid(opts: TerrainFetchOpts): Promise<HeightGri
       )
     }
 
-    // Prefer exact spawn sample; if that tile missed, use mean of tile centers.
-    let spawnElevMsl = elevAtLatLng(tiles, spawnLl.lat, spawnLl.lng, zoom)
+    // Prefer Drop-locked MSL (sliding window); else sample spawn / tile-mean.
+    let spawnElevMsl = opts.lockedSpawnElevMsl
     let spawnNote = ''
-    if (!Number.isFinite(spawnElevMsl)) {
-      spawnElevMsl = meanFiniteElev(tiles)
-      spawnNote = ' (spawn≈tile-mean)'
+    if (spawnElevMsl != null && Number.isFinite(spawnElevMsl)) {
+      spawnNote = ' (locked Drop MSL)'
+    } else {
+      spawnElevMsl = elevAtLatLng(tiles, spawnLl.lat, spawnLl.lng, zoom)
       if (!Number.isFinite(spawnElevMsl)) {
-        return flatHeightGrid(
-          centerX,
-          centerZ,
-          size,
-          `Flat fallback — ${tiles.size} tiles fetched but no finite elev samples.`,
-        )
+        spawnElevMsl = meanFiniteElev(tiles)
+        spawnNote = ' (spawn≈tile-mean)'
+        if (!Number.isFinite(spawnElevMsl)) {
+          return flatHeightGrid(
+            centerX,
+            centerZ,
+            size,
+            `Flat fallback — ${tiles.size} tiles fetched but no finite elev samples.`,
+          )
+        }
       }
     }
 
@@ -586,7 +596,7 @@ export type FarTerrainFetchOpts = {
 /**
  * Coarse Terrarium height grid out to ~radiusM around spawn (visual skyline).
  * Uses lower zoom than the near playfield so we stay under MAX_FAR_TILES.
- * Heights are relative to spawnElevMsl × VERTICAL_EXAGGERATION (same as near).
+ * Heights are relative to spawnElevMsl × VERTICAL_EXAGGERATION (1× fidelity, same as near).
  */
 export async function fetchFarHeightGrid(
   opts: FarTerrainFetchOpts,

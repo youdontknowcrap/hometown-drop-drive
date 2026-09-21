@@ -17,11 +17,15 @@ import {
   type StreetTileStreamer,
 } from '../lib/streetTiles'
 import type { StreetWay, StreetWorld } from '../lib/osmStreets'
+import type { BuildingBox } from '../lib/osmBuildings'
 
 export type StreetStreamingState = {
   world: StreetWorld
   /** HARD GPS RULE: same ways Scene renders — never prefetch-only. */
   activeWays: StreetWay[]
+  /** Buildings for active tiles only (unload with tiles). Not on GPS. */
+  activeBuildings: BuildingBox[]
+  buildingsMessage: string
   activeTileCount: number
   loadingCount: number
   streamMessage: string
@@ -30,7 +34,7 @@ export type StreetStreamingState = {
    * Bumps when the *active tile set* changes (ways added/removed).
    * LEARNING — NOT a remount key for Car / FollowCam / Scene. App passes
    * dropNonce as routeVersion for spawn/camera; streamVersion only feeds
-   * additive Road / GPS way lists.
+   * additive Road / GPS / building lists.
    */
   streamVersion: number
   streaming: boolean
@@ -56,6 +60,8 @@ function stateFromStreamer(streamer: StreetTileStreamer): Omit<StreetStreamingSt
   return {
     world: worldFromStreamer(streamer),
     activeWays: s.activeWays,
+    activeBuildings: s.activeBuildings,
+    buildingsMessage: s.buildingsMessage,
     activeTileCount: s.activeTileCount,
     loadingCount: s.loadingCount,
     streamMessage: s.message,
@@ -77,6 +83,8 @@ const IDLE: StreetStreamingState = {
     wayCount: 0,
   },
   activeWays: [],
+  activeBuildings: [],
+  buildingsMessage: 'Buildings: …',
   activeTileCount: 0,
   loadingCount: 0,
   streamMessage: 'Streaming…',

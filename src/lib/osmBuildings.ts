@@ -37,8 +37,11 @@ import { latLngToLocal, metersPerDegree, type LatLng } from './geo'
 import { overpassInterpreter } from './osmApi'
 import type { RoadSurfaceWay } from './roadSurface'
 
-/** Soft cap — neighborhood scenery; raised so houses survive the budget. */
+/** Soft cap — active-tile union; raised so houses survive the budget. */
 export const MAX_BUILDINGS = 450
+
+/** Soft cap per ~1 km street tile before union merge. */
+export const MAX_BUILDINGS_PER_TILE = 80
 
 /**
  * Share of MAX_BUILDINGS reserved for residential / house-candidates.
@@ -471,4 +474,92 @@ out tags geom;`
       otherKept: 0,
     }
   }
+}
+
+
+/**
+ * Buildings inside an explicit WGS84 bbox (one street tile).
+ * Same stratified residential preference as fetchBuildings; smaller per-tile cap.
+ * Worker + main both call this — Overpass etiquette (gap/queue) lives in the streamer.
+ */
+export async function fetchBuildingsInBbox(
+  south: number,
+  west: number,
+  north: number,
+  east: number,
+  origin: LatLng,
+  maxBoxes = MAX_BUILDINGS_PER_TILE,
+): Promise<BuildingWorld> {
+  const query = `[out:json][timeout:25];
+(
+  way["building"](${south},${west},${north},${east});
+);
+out tags geom;`
+
+  try {
+    const res = await overpassInterpreter(query)
+    const data = (await res.json()) as { elements?: OverpassBuilding[] }
+    const scored: ScoredBox[] = []
+
+    for (const el of data.elements ?? []) {
+      if (!el.geometry || el.geometry.length < 3) continue
+      const tag = (el.tags?.building ?? '').toLowerCase()
+      if (tag === 'no') continue
+      const box = ringToBox(el.geometry, origin, el.tags)
+      if (box) scored.push(box)
+    }
+
+    const kept = stratifiedKeep(scored, maxBoxes)
+    const boxes = assignSolidColliders(kept)
+    const residentialKept = boxes.filter((x) => x.residential).length
+    const otherKept = boxes.length - residentialKept
+    const msg =
+      boxes.length > 0
+        ? `Tile buildings: ${boxes.length} (${residentialKept} res / ${otherKept} other) of ${scored.length}`
+        : 'Tile buildings: none'
+    return {
+      boxes,
+      source: boxes.length ? 'osm' : 'none',
+      message: msg,
+      found: scored.length,
+      residentialKept,
+      otherKept,
+    }
+  } catch (err) {
+    const why = err instanceof Error ? err.message : 'unknown'
+    return {
+      boxes: [],
+      source: 'none',
+      message: `Tile buildings skipped (${why})`,
+      found: 0,
+      residentialKept: 0,
+      otherKept: 0,
+    }
+  }
+}
+
+/**
+ * Merge per-tile boxes for the active set, re-apply total cap + solid flags.
+ * Prefer nearer-to-Drop residential the same way stratifiedKeep does.
+ */
+export function mergeActiveBuildingBoxes(
+  perTile: BuildingBox[][],
+  cap = MAX_BUILDINGS,
+): BuildingBox[] {
+  const flat = perTile.flat()
+  if (flat.length <= cap) {
+    // Re-score solid colliders on the union (nearest across all active tiles).
+    const scored: ScoredBox[] = flat.map((b) => ({
+      ...b,
+      area: b.width * b.depth,
+      dist2: b.x * b.x + b.z * b.z,
+    }))
+    return assignSolidColliders(scored)
+  }
+  const scored: ScoredBox[] = flat.map((b) => ({
+    ...b,
+    area: b.width * b.depth,
+    dist2: b.x * b.x + b.z * b.z,
+  }))
+  return assignSolidColliders(stratifiedKeep(scored, cap))
 }

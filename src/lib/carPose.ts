@@ -24,7 +24,7 @@ export const carPose = {
   /**
    * Absolute altitude above sea level (meters).
    * Computed as spawnElevMsl + groundY / VERTICAL_EXAGGERATION so the speedo
-   * shows honest MSL even though the mesh is arcade-exaggerated.
+   * shows honest MSL (factor is 1× fidelity today).
    */
   elevMsl: 0,
   /**

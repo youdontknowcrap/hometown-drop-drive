@@ -29,6 +29,9 @@
  *   Prefetch may hit the network and sit in RAM, but must NEVER paint on the
  *   dial until the tile is active in Scene/Road. When a tile activates, 3D
  *   streets and GPS streets appear together — that IS the visual load cue.
+ *
+ * Buildings stream on the same tiles (worker Overpass) but never paint GPS.
+ * Elev sliding window is Scene-side (worker elev decode) keyed off loadedAabb.
  */
 
 import {
@@ -38,12 +41,18 @@ import {
   type LatLng,
 } from './geo'
 import {
-  fetchWaysInBbox,
   geocodeDrop,
   getDemoWorld,
   type StreetWay,
   type StreetWorld,
 } from './osmStreets'
+import { workerFetchBuildings, workerFetchWays } from './tileLoaderClient'
+import {
+  mergeActiveBuildingBoxes,
+  MAX_BUILDINGS,
+  MAX_BUILDINGS_PER_TILE,
+  type BuildingBox,
+} from './osmBuildings'
 
 /** Edge length of one street tile (meters). ~1 km keeps Overpass snappy. */
 export const TILE_M = 1000
@@ -80,6 +89,8 @@ export type StreetTile = {
   tz: number
   status: TileStatus
   ways: StreetWay[]
+  /** OSM building AABBs for this tile (empty until worker returns). */
+  buildings: BuildingBox[]
   error?: string
 }
 
@@ -99,6 +110,9 @@ export type StreamSnapshot = {
   origin: LatLng
   dropLabel: string
   activeWays: StreetWay[]
+  /** HARD GPS RULE still streets-only — buildings are scenery, not dial ink. */
+  activeBuildings: BuildingBox[]
+  buildingsMessage: string
   activeTileCount: number
   loadingCount: number
   cachedCount: number
@@ -300,10 +314,24 @@ export class StreetTileStreamer {
     const cachedCount = all.filter((t) => t.status === 'cached').length
     // Stable reference when active content unchanged — Road meshes stay put.
     const activeWays = this.refreshActiveWaysCache()
+    // Buildings follow the same active set (unload when tile demotes/drops).
+    const activeBuildings = mergeActiveBuildingBoxes(
+      activeTiles.map((t) => t.buildings),
+      MAX_BUILDINGS,
+    )
+    const resN = activeBuildings.filter((b) => b.residential).length
+    const buildingsMessage =
+      activeBuildings.length > 0
+        ? `Buildings: ${activeBuildings.length} active (${resN} residential) · streamed per tile · cap ${MAX_BUILDINGS}`
+        : loadingCount > 0
+          ? 'Buildings: streaming with tiles…'
+          : 'Buildings: none in active tiles'
     return {
       origin: this.origin,
       dropLabel: this.dropLabel,
       activeWays,
+      activeBuildings,
+      buildingsMessage,
       activeTileCount: activeTiles.length,
       loadingCount,
       cachedCount,
@@ -333,6 +361,7 @@ export class StreetTileStreamer {
       tz: 0,
       status: 'active',
       ways,
+      buildings: [],
     })
     this.emit()
   }
@@ -415,6 +444,7 @@ export class StreetTileStreamer {
           tz: tzi,
           status: 'empty',
           ways: [],
+          buildings: [],
         })
         const urgent =
           bootstrap &&
@@ -503,8 +533,9 @@ export class StreetTileStreamer {
     const gen = this.gen
     const bbox = tileToBbox(tile.tx, tile.tz, this.origin)
 
-    void fetchWaysInBbox(bbox.south, bbox.west, bbox.north, bbox.east)
-      .then((ways) => {
+    // Worker: Overpass + JSON parse off the render thread. Main only merges.
+    void workerFetchWays(bbox.south, bbox.west, bbox.north, bbox.east)
+      .then(async (ways) => {
         if (this.disposed || gen !== this.gen) return
         const live = this.tiles.get(tile.key)
         if (!live) return
@@ -515,6 +546,26 @@ export class StreetTileStreamer {
         live.status =
           dCar <= ACTIVE_RING || dLook <= ACTIVE_RING ? 'active' : 'cached'
         this.emit()
+
+        // Same tile stream: buildings after ways (sequential = polite to Overpass).
+        // Cached tiles keep buildings in RAM; only *active* union reaches Scene.
+        try {
+          const bw = await workerFetchBuildings(
+            bbox.south,
+            bbox.west,
+            bbox.north,
+            bbox.east,
+            this.origin,
+            MAX_BUILDINGS_PER_TILE,
+          )
+          if (this.disposed || gen !== this.gen) return
+          const again = this.tiles.get(tile.key)
+          if (!again) return
+          again.buildings = bw.boxes
+          this.emit()
+        } catch (err) {
+          console.warn('[streetTiles] tile buildings failed', tile.key, err)
+        }
       })
       .catch((err: unknown) => {
         if (this.disposed || gen !== this.gen) return
@@ -523,6 +574,7 @@ export class StreetTileStreamer {
         live.status = 'error'
         live.error = err instanceof Error ? err.message : 'tile fetch failed'
         live.ways = []
+        live.buildings = []
         this.emit()
       })
       .finally(() => {

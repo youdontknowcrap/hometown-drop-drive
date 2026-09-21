@@ -86,7 +86,7 @@ function drapeGeometry(
 }
 
 /**
- * Densify OSM centerline tighter than cellSize so draped chords track 5× hills.
+ * Densify OSM centerline tighter than cellSize so draped chords track relief hills.
  * LEARNING: 1× cellSize still left mid-segment desert poking through on steep
  * Ridgecrest slopes; 0.5× puts ribbon verts on a finer hill frequency.
  */
@@ -106,7 +106,7 @@ function pathForDrape(path: XzPoint[], grid: HeightGrid): XzPoint[] {
  * paved band is obvious even when the albedo map is mid-gray.
  *
  * Playtest (hills): 0.4 m bias + 1× densify still let Ground / FarGround eat
- * streets on 5× slopes. Harder fix: ~1.25 m ROAD_Y_BIAS_M, 0.5× densify,
+ * streets on relief slopes. Harder fix: ~1.25 m ROAD_Y_BIAS_M, 0.5× densify,
  * stronger polygonOffset / renderOrder, plus Ground trench (see roadHeights).
  */
 export function Road({ streets, heightGrid }: RoadProps) {

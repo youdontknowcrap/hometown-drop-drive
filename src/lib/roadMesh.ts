@@ -134,10 +134,10 @@ export type MeshArrays = {
  * LEARNING — why densify before draping?
  *   OSM ways often jump 100–500 m between nodes. Road ribbon verts only exist
  *   at those nodes; after we add sampleHeight, chords between verts are straight
- *   in 3D while the Ground mesh (cellSize ≈ tens of m, 5× arcade hills) follows
+ *   in 3D while the Ground mesh (cellSize ≈ tens of m, real-relief hills) follows
  *   the slope. Mid-segment desert then pokes through / buries the asphalt.
  *   Densifying to ~0.5×heightGrid.cellSize puts ribbon verts on a finer hill
- *   frequency than the terrain mesh so draped chords stick on 5× slopes.
+ *   frequency than the terrain mesh so draped chords stick on real-relief slopes.
  */
 export function densifyPath(path: XzPoint[], maxSegLen: number): XzPoint[] {
   if (path.length < 2 || !(maxSegLen > 0)) return path

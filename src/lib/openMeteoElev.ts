@@ -12,7 +12,7 @@
  *   → { elevation: [meters, …] }
  *
  * We sample a coarse grid across the street bbox, then bilinear-upsample into
- * the same HeightGrid shape Terrarium builds (relative-to-spawn + VERTICAL_EXAGGERATION).
+ * the same HeightGrid shape Terrarium builds (relative-to-spawn + 1× fidelity).
  *
  * Dev can hit `/api/open-meteo/...` (Vite proxy) or the public URL directly.
  */
@@ -33,7 +33,7 @@ const MAX_COORDS = 100
 const SAMPLE_N = 10
 /** Match Terrarium display grid so Ground / Road / Car share one sampler. */
 const GRID_RES = 96
-/** Shared with terrarium.ts — arcade × for basin towns (see that file). */
+/** Shared with terrarium.ts — VERTICAL_EXAGGERATION = 1 (fidelity). */
 
 function elevUrl(lats: number[], lngs: number[]): string[] {
   const qs = `latitude=${lats.map((v) => v.toFixed(5)).join(',')}&longitude=${lngs.map((v) => v.toFixed(5)).join(',')}`
@@ -101,6 +101,7 @@ export async function fetchOpenMeteoHeightGrid(
   opts: TerrainFetchOpts,
 ): Promise<HeightGrid | null> {
   const { origin, minX, maxX, minZ, maxZ, spawnX, spawnZ } = opts
+  // lockedSpawnElevMsl read below when present
 
   const pad = 40
   const oMinX = minX - pad
@@ -139,21 +140,23 @@ export async function fetchOpenMeteoHeightGrid(
       return null
     }
 
-    // Spawn MSL: bilinear on the coarse grid at spawn’s local UV.
-    const su = ((spawnX - originX) / size) * (n - 1)
-    const sv = ((spawnZ - originZ) / size) * (n - 1)
-    let spawnElevMsl = sampleCoarse(coarse, n, su, sv)
-    if (!Number.isFinite(spawnElevMsl)) {
-      // Mean of finite coarse samples — same honesty as Terrarium tile-mean.
-      let sum = 0
-      let count = 0
-      for (const e of elevList) {
-        if (Number.isFinite(e)) {
-          sum += e
-          count++
+    // Drop-locked MSL for sliding windows; else bilinear / coarse mean.
+    let spawnElevMsl = opts.lockedSpawnElevMsl
+    if (spawnElevMsl == null || !Number.isFinite(spawnElevMsl)) {
+      const su = ((spawnX - originX) / size) * (n - 1)
+      const sv = ((spawnZ - originZ) / size) * (n - 1)
+      spawnElevMsl = sampleCoarse(coarse, n, su, sv)
+      if (!Number.isFinite(spawnElevMsl)) {
+        let sum = 0
+        let count = 0
+        for (const e of elevList) {
+          if (Number.isFinite(e)) {
+            sum += e
+            count++
+          }
         }
+        spawnElevMsl = count > 0 ? sum / count : 0
       }
-      spawnElevMsl = count > 0 ? sum / count : 0
     }
 
     const cols = GRID_RES

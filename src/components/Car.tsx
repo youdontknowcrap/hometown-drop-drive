@@ -379,7 +379,7 @@ export function Car({
       wantY += LEAVE_BUMP_PEAK_M * Math.sin(Math.PI * u)
       leaveBumpT.current = Math.max(0, leaveBumpT.current - dt)
     }
-    // Honest MSL for the speedo: undo VERTICAL_EXAGGERATION baked into groundY.
+    // Honest MSL for the speedo: groundY / VERTICAL_EXAGGERATION (1× fidelity).
 
     // --- Wedge detect (before we author another push into the wall) ---
     const disp = Math.hypot(t.x - prevXZ.current.x, t.z - prevXZ.current.z)

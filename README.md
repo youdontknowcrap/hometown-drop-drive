@@ -60,6 +60,10 @@ Drive off the planned path and GPS **reroutes** (debounced). Leave asphalt/track
 
 Speedo shows **true mph** plus an optional **meters-last-second** sanity line (`≈ mph × 0.447`). We do not fake units — if 110 “doesn’t feel fast,” pull the chase cam back.
 
+## Streaming + worker load
+
+Street tiles (~1 km) activate around the car; **buildings** and a **sliding near height grid** follow the same active AABB (far skyline recenters as you drive). Overpass / Terrarium / Open-Meteo **parse runs in a Web Worker** (`tileLoader.worker.ts`) so the render/input thread only merges results — tile loads must not remount Car / FollowCam / Scene.
+
 ## Learning notes
 
 This repo is a teaching project. New/changed files carry short **why** comments. The models in one place:
@@ -117,7 +121,7 @@ URL:  /api/terrarium/{z}/{x}/{y}.png   (Vite → s3 elevation-tiles-prod)
 Decode: elev_m = (R × 256 + G + B / 256) − 32768
 ```
 
-We displace the ground under the loaded street bbox, drape asphalt + GPS line, and pin the car’s Y to a bilinear sample. Heights are **relative to spawn elevation** so Drop doesn’t launch into the sky, then ×**~5 arcade exaggeration** so basin hills read in a chase cam (HUD + speedo MSL undo that factor). A separate **far LOD ring** (~12 km, visual only, Terrarium z8–z9 or Open-Meteo) draws distant mountains beyond the near bbox. Tile fetch failure → flat ground (still playable).
+We displace the ground under the loaded street bbox, drape asphalt + GPS line, and pin the car’s Y to a bilinear sample. Heights are **relative to spawn elevation** so Drop doesn’t launch into the sky, at **1× fidelity** (real meters of relief — no arcade stretch). HUD + speedo MSL match the mesh. A separate **far LOD ring** (~12 km, visual only, Terrarium z8–z9 or Open-Meteo) draws distant mountains beyond the near bbox. Tile fetch failure → flat ground (still playable).
 
 Playtest fix (hills eat roads): densify OSM centerlines to **0.5×`cellSize`**, raise ribbons ~**1.25 m** above `sampleHeight` (arcade curb), dig a matching **desert trench** under road corridors on Ground / FarGround blend, and strengthen `polygonOffset` / `renderOrder`. `sampleHeight` itself is unchanged — the car still pins Y to the same sampler with clearance a hair above the bias so it sits on asphalt.
 
@@ -127,7 +131,7 @@ See `src/lib/terrarium.ts`, `src/components/Ground.tsx`, Vite `/api/terrarium` p
 
 ### Open-Meteo elevation fallback
 
-If Terrarium tiles fail (no proxy / CORS / decode), we sample a ≤100-point lat/lng grid from Open-Meteo elevation, bilinear-upsample to the same height grid, still **relative-to-spawn** with shared `VERTICAL_EXAGGERATION`. Both fail → quiet “Flat ground” (no scary sample errors). HUD labels the path: Terrarium / Open-Meteo elev / Flat, plus a **Far terrain:** line for the skyline ring.
+If Terrarium tiles fail (no proxy / CORS / decode), we sample a ≤100-point lat/lng grid from Open-Meteo elevation, bilinear-upsample to the same height grid, still **relative-to-spawn** with `VERTICAL_EXAGGERATION = 1` (fidelity). Both fail → quiet “Flat ground” (no scary sample errors). HUD labels the path: Terrarium / Open-Meteo elev / Flat, plus a **Far terrain:** line for the skyline ring.
 
 See `src/lib/elevation.ts`, `src/lib/openMeteoElev.ts`, Vite `/api/open-meteo`.
 

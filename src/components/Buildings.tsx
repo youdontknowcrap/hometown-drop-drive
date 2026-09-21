@@ -58,8 +58,10 @@ export function Buildings({ boxes, heightGrid, version }: BuildingsProps) {
         const hz = Math.max(0.05, b.depth * 0.5 - COLLIDER_INSET_M)
         const hy = b.height * 0.5
 
+        // Stable key from footprint — tile stream must not reshuffle React identity.
+        const key = `${b.x.toFixed(1)},${b.z.toFixed(1)},${b.width.toFixed(1)}`
         return (
-          <group key={i} position={[b.x, y, b.z]}>
+          <group key={key} position={[b.x, y, b.z]}>
             <mesh castShadow receiveShadow>
               <boxGeometry args={[b.width, b.height, b.depth]} />
               <meshStandardMaterial

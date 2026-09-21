@@ -295,6 +295,9 @@ export function Hud({
               {terrainMessage}
             </p>
           ) : null}
+          <p className="hud-status" role="status">
+            Relief 1× (true meters — fidelity, not arcade stretch)
+          </p>
           {farTerrainMessage ? (
             <p className="hud-status" role="status">
               {farTerrainMessage}

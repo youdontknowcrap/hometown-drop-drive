@@ -11,10 +11,10 @@ import { MAX_SPEED_MPH, MPH_TO_MS } from '../lib/longitudinal'
  * "feels slow," tweak the chase cam — do not multiply mph by a fudge factor.
  *
  * Altitude line (m MSL):
- *   Heights in the playfield mesh are relative to spawn × VERTICAL_EXAGGERATION
+ *   Heights in the playfield mesh are relative to spawn × VERTICAL_EXAGGERATION (1×)
  *   so basin hills read in a toy chase cam. The speedo undoes that factor
  *   (see carPose.elevMsl / relativeHeightToMsl) so the number matches the
- *   Terrarium HUD "spawn … m MSL" honesty — arcade mesh, survey readout.
+ *   Terrarium HUD "spawn … m MSL" honesty — fidelity mesh, survey readout.
  */
 export function Speedo() {
   const valueRef = useRef<HTMLSpanElement>(null)

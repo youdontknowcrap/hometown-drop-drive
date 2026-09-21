@@ -49,7 +49,7 @@ function prepMaps(textures: THREE.Texture | THREE.Texture[]) {
  * point sits near y=0 and surrounding hills read as hills, not a flying carpet.
  *
  * LEARNING — road trench:
- *   Bias + densify alone still lose depth fights on 5× slopes because Ground
+ *   Bias + densify alone still lose depth fights on relief slopes because Ground
  *   triangles are a different triangulation than the ribbon. When a vert falls
  *   under a road corridor we lower it by ROAD_TRENCH_M so asphalt sits in a
  *   shallow dug channel. sampleHeight() is untouched — Car / Buildings still

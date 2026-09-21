@@ -10,7 +10,8 @@ import { distanceToPath } from './lib/guidance'
 import { getDemoWorld, type StreetWorld } from './lib/osmStreets'
 import { useStreetStreaming } from './hooks/useStreetStreaming'
 import { routeBetween, routeToAddress, type NavRoute } from './lib/routing'
-import { fetchBuildings, type BuildingBox } from './lib/osmBuildings'
+import { VERTICAL_EXAGGERATION } from './lib/terrarium'
+import { tileLoaderUsesWorker } from './lib/tileLoaderClient'
 import {
   fetchLocalWeather,
   resolveWeatherLook,
@@ -49,8 +50,7 @@ export default function App() {
   const [gpsBusy, setGpsBusy] = useState(false)
   const [terrainMessage, setTerrainMessage] = useState('Elevation: …')
   const [farTerrainMessage, setFarTerrainMessage] = useState('Far terrain: …')
-  const [buildings, setBuildings] = useState<BuildingBox[]>([])
-  const [buildingsMessage, setBuildingsMessage] = useState('Buildings: …')
+  // Buildings stream with street tiles (see useStreetStreaming) — no one-shot Drop fetch.
   const [weatherPreset, setWeatherPreset] = useState<WeatherPreset>('auto')
   const [liveWeather, setLiveWeather] = useState<WeatherLook | null>(null)
   const [paintHex, setPaintHex] = useState(DEFAULT_PAINT)
@@ -96,8 +96,6 @@ export default function App() {
     navLocalRef.current = []
     setGpsStatus('idle')
     setGpsMessage('')
-    setBuildings([])
-    setBuildingsMessage('Loading buildings…')
     setLiveWeather(null)
     setDropNonce((n) => n + 1)
     // Playtest #17: leave the address field so WASD drives immediately.
@@ -120,18 +118,16 @@ export default function App() {
     return () => window.clearInterval(id)
   }, [weatherPreset, world.origin])
 
-  // Scenery + weather follow the Drop origin (once streaming has one).
+  // Weather follows Drop origin; buildings stream with tiles (worker Overpass).
   useEffect(() => {
     if (!stream.streaming) return
     const origin = stream.world.origin
     if (!origin.lat && !origin.lng) return
-    setBuildingsMessage('Loading buildings…')
-    void fetchBuildings(origin).then((bw) => {
-      setBuildings(bw.boxes)
-      setBuildingsMessage(bw.message)
-    })
     void fetchLocalWeather(origin).then(setLiveWeather)
-    console.info('[stream]', stream.tileMath)
+    console.info('[stream]', stream.tileMath, {
+      worker: tileLoaderUsesWorker(),
+      relief: `${VERTICAL_EXAGGERATION}× fidelity`,
+    })
   }, [stream.world.origin.lat, stream.world.origin.lng, stream.streaming])
 
 
@@ -272,7 +268,7 @@ export default function App() {
           camHeight={camHeight}
           onTerrainMessage={setTerrainMessage}
           onFarTerrainMessage={setFarTerrainMessage}
-          buildings={buildings}
+          buildings={stream.activeBuildings}
           weather={weather}
           paintHex={paintHex}
         />
@@ -289,7 +285,7 @@ export default function App() {
         world={world}
         terrainMessage={terrainMessage}
         farTerrainMessage={farTerrainMessage}
-        buildingsMessage={buildingsMessage}
+        buildingsMessage={stream.buildingsMessage}
         tilesMessage={`Tiles: ${stream.activeTileCount} loaded · streaming`}
         streamMessage={stream.streamMessage}
         weatherSummary={weather.summary}
