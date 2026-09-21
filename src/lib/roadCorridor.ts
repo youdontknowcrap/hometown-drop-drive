@@ -5,6 +5,10 @@
  * union, and emit thin vertical wall segments along the OUTER perimeter only.
  * That lets kids leave the asphalt and poke around, then hit a clean stop —
  * not Autopia rails hugging every residential curb.
+ *
+ * Soft off-road (leave bump + 50% speed) lives in `roadSurface.ts` — this file
+ * is only the last-resort ~200 ft fence. Do not shrink CONTAINMENT_M to ribbon
+ * half-width; that would become Autopia again.
  */
 
 import type { XzPoint } from './roadMesh'

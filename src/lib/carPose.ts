@@ -27,5 +27,11 @@ export const carPose = {
    * shows honest MSL even though the mesh is arcade-exaggerated.
    */
   elevMsl: 0,
+  /**
+   * True when beyond asphalt/track half-width (desert). Speedo shows
+   * "OFF ROAD −50%" while this is set. Soft feel only — hard 200 ft wall
+   * is still RoadContainment.
+   */
+  offRoad: false,
   ready: false,
 }

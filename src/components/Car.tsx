@@ -8,7 +8,10 @@ import { softSteeringHint } from '../lib/guidance'
 import { carPose } from '../lib/carPose'
 import {
   MPH_TO_MS,
+  OFF_ROAD_MAX_SPEED_MPH,
+  MAX_SPEED_MPH,
   bicycleYawRate,
+  dragTowardOffRoadCap,
   stepSignedSpeedMph,
   wheelAngleRad,
 } from '../lib/longitudinal'
@@ -18,6 +21,10 @@ import {
   sampleHeight,
   type HeightGrid,
 } from '../lib/terrarium'
+import {
+  isOnRoadSurface,
+  type RoadSurfaceWay,
+} from '../lib/roadSurface'
 
 const _euler = new THREE.Euler()
 const _forward = new THREE.Vector3()
@@ -27,6 +34,16 @@ const _yawQ = new THREE.Quaternion()
 
 /** How high the RigidBody center sits above sampled ground. */
 const CAR_CLEARANCE_M = 0.55
+
+/**
+ * Arcade leave-asphalt jolt (edge-triggered on→off only — never every frame).
+ * Y is normally pinned to terrain each tick, so we add a decaying half-sine
+ * offset to wantY instead of a Rapier impulse (impulse would be overwritten).
+ */
+const LEAVE_BUMP_DURATION_S = 0.42
+const LEAVE_BUMP_PEAK_M = 1.45
+/** Instant mph chop when the curb hits — sells the thump with the vertical bump. */
+const LEAVE_BUMP_SPEED_KEEP = 0.82
 
 /**
  * Kenney Car Kit already ships a sportier GLB (`sedan-sports.glb`) with a
@@ -63,6 +80,11 @@ type CarProps = {
   heightGrid: HeightGrid
   /** Body paint hex (from HUD picker or DEFAULT_PAINT). */
   paintHex?: string
+  /**
+   * Asphalt + track ribbons (half-width). Beyond → offRoad speed + leave bump.
+   * Hard ~200 ft wall stays in RoadContainment — do not put that radius here.
+   */
+  roadSurfaceWays?: RoadSurfaceWay[]
 }
 
 function shadowClone(src: THREE.Object3D): THREE.Object3D {
@@ -199,6 +221,11 @@ useGLTF.preload(SEDAN_SPORTS)
  * fighting the car. Wheel-angle demand means: hold mid-stick → constant
  * turn *radius* at that speed (you hold the arc). Release to deadzone →
  * δ→0 → ω→0 → straight. That is the standard arcade-sim bicycle model.
+ *
+ * --- Off-road (soft) vs containment (hard) ---
+ * Past asphalt/track half-width → desert: edge-triggered leave bump + 55 mph
+ * cap (see roadSurface.ts / longitudinal OFF_ROAD_*). ~200 ft corridor walls
+ * from RoadContainment stay as the hard fence — soft feel does not replace them.
  */
 export function Car({
   keys,
@@ -209,6 +236,7 @@ export function Car({
   spawnKey,
   heightGrid,
   paintHex = DEFAULT_PAINT,
+  roadSurfaceWays = [],
 }: CarProps) {
   const body = useRef<RapierRigidBody>(null)
   /** Authoritative signed speed (mph) along forward. Positive = nose direction. */
@@ -217,14 +245,21 @@ export function Car({
   const steerAngle = useRef(0)
   /** Trailing-second distance accumulator for HUD sanity (meters). */
   const odometer = useRef({ x: spawn[0], z: spawn[2], acc: 0, t: 0, last: 0 })
+  /** Edge-detect leave asphalt: was on ribbon last frame? */
+  const wasOnRoad = useRef(true)
+  /** Seconds left in the leave-bump half-sine (0 = idle). */
+  const leaveBumpT = useRef(0)
 
   // Fresh drop / respawn — zero authored speed with the new RigidBody.
   useEffect(() => {
     signedMph.current = 0
     steerAngle.current = 0
+    wasOnRoad.current = true
+    leaveBumpT.current = 0
     carPose.speedMph = 0
     carPose.metersLastSecond = 0
     carPose.elevMsl = heightGrid.spawnElevMsl
+    carPose.offRoad = false
     odometer.current = { x: spawn[0], z: spawn[2], acc: 0, t: 0, last: 0 }
   }, [spawnKey, spawn, heightGrid.spawnElevMsl])
 
@@ -251,20 +286,50 @@ export function Car({
       else reverse = true
     }
 
+    const t = rb.translation()
+
+    // --- On ribbon vs desert (soft) ---
+    // Paved + track count as "road". Beyond half-width → offRoad.
+    // Hard ~200 ft fence is RoadContainment — still the last-resort wall.
+    const onRoad =
+      roadSurfaceWays.length === 0
+        ? true
+        : isOnRoadSurface(t.x, t.z, roadSurfaceWays)
+
+    // Edge-trigger: only fire the arcade jolt when we *leave* the ribbon.
+    if (wasOnRoad.current && !onRoad) {
+      leaveBumpT.current = LEAVE_BUMP_DURATION_S
+      signedMph.current *= LEAVE_BUMP_SPEED_KEEP
+    }
+    wasOnRoad.current = onRoad
+
+    // Sticky dirt: if already above 55 mph off-road, yank toward the cap first.
+    const speedCap = onRoad ? MAX_SPEED_MPH : OFF_ROAD_MAX_SPEED_MPH
+    if (!onRoad) {
+      signedMph.current = dragTowardOffRoadCap(signedMph.current, dt)
+    }
+
     signedMph.current = stepSignedSpeedMph(
       signedMph.current,
       throttle,
       brake,
       reverse,
       dt,
+      speedCap,
     )
 
     const speedMs = signedMph.current * MPH_TO_MS
-    const t = rb.translation()
 
     // --- Terrain follow: pin Y to height sample (relative to spawn elev)
     const groundY = sampleHeight(heightGrid, t.x, t.z)
-    const wantY = groundY + CAR_CLEARANCE_M
+    let wantY = groundY + CAR_CLEARANCE_M
+
+    // Leave-bump: half-sine lift so the curb thump reads even with Y pinned.
+    if (leaveBumpT.current > 0) {
+      const u = 1 - leaveBumpT.current / LEAVE_BUMP_DURATION_S // 0 → 1
+      wantY += LEAVE_BUMP_PEAK_M * Math.sin(Math.PI * u)
+      leaveBumpT.current = Math.max(0, leaveBumpT.current - dt)
+    }
     // Honest MSL for the speedo: undo VERTICAL_EXAGGERATION baked into groundY.
 
     rb.setLinvel(
@@ -342,6 +407,7 @@ export function Car({
     carPose.metersLastSecond = od.last
     carPose.groundY = groundY
     carPose.elevMsl = relativeHeightToMsl(heightGrid, groundY)
+    carPose.offRoad = !onRoad
     carPose.ready = true
   })
 

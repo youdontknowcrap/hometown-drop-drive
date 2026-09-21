@@ -56,7 +56,7 @@ Stick axes use a **0.22 deadzone** so resting sticks don’t drift. Steering is 
 - **Guidance ON** — soft follow the blue GPS line (nearest-segment hint)
 - **Guidance OFF** / no destination — free drive
 
-Drive off the planned path and GPS **reroutes** (debounced). You can drive onto the desert for ~200 ft, then a hard corridor wall stops the car. Ground and road textures repeat in **meters**. Cap speed **110 mph** (~18 mph/s throttle, ~28 brake, ~4 coast).
+Drive off the planned path and GPS **reroutes** (debounced). Leave asphalt/track ribbons and you get an arcade **leave bump** plus a **~50% speed cap (~55 mph)** in the desert; after ~200 ft a hard corridor wall stops the car. Ground and road textures repeat in **meters**. On-road cap **110 mph** (~18 mph/s throttle, ~28 brake, ~4 coast).
 
 Speedo shows **true mph** plus an optional **meters-last-second** sanity line (`≈ mph × 0.447`). We do not fake units — if 110 “doesn’t feel fast,” pull the chase cam back.
 
@@ -90,6 +90,13 @@ Signed speed along the nose (mph), written into Rapier each frame:
 | Cap | 110 | product lock |
 
 Gamepad splits **brake** (RT → toward 0) from **reverse** (LB). Keyboard S stays “brake or reverse by context.” See `src/lib/driveInput.ts` for button indices.
+
+### Off-road soft feel vs hard containment
+
+Two layers:
+
+1. **Road surface** (`roadSurface.ts`) — distance to nearest OSM way centerline vs that way’s half-width (paved **or** track). Past the ribbon → desert: edge-triggered leave bump (half-sine Y offset + speed chop) and `OFF_ROAD_MAX_SPEED_MPH` (55). Speedo shows **OFF ROAD −50%**.
+2. **Hard corridor** (`roadCorridor.ts` / `RoadContainment`) — ~200 ft / 61 m buffer walls. Last-resort fence so you cannot wander forever. Soft feel does **not** replace this.
 
 ### Perceived speed vs true scale
 

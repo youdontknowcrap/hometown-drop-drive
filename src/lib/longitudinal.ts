@@ -21,6 +21,20 @@
 export const MPH_TO_MS = 0.44704
 export const MAX_SPEED_MPH = 110
 
+/**
+ * Off-road (desert, past asphalt/track half-width) — Joey playtest feel.
+ * Cap effective top speed at half of MAX so dirt feels sticky/slow.
+ * Hard ~200 ft corridor wall is separate (roadCorridor / RoadContainment).
+ */
+export const OFF_ROAD_SPEED_FACTOR = 0.5
+export const OFF_ROAD_MAX_SPEED_MPH = MAX_SPEED_MPH * OFF_ROAD_SPEED_FACTOR // 55
+
+/**
+ * When you leave the ribbon already above the off-road cap, yank toward it
+ * (mph/s). Arcade "mud" — not a gentle coast down from 110.
+ */
+export const OFF_ROAD_DRAG_MPH_S = 55
+
 /** ~18 mph/s → 0–60 in ≈ 3.3 seconds. */
 export const THROTTLE_MPH_S = 18
 
@@ -52,6 +66,8 @@ export function stepSignedSpeedMph(
   brake: boolean,
   reverse: boolean,
   dt: number,
+  /** Soft cap (on-road 110, off-road ~55). Defaults to product max. */
+  maxSpeedMph: number = MAX_SPEED_MPH,
 ): number {
   const t = clampDt(dt)
   let next = signedMph
@@ -109,7 +125,23 @@ export function stepSignedSpeedMph(
 
   if (Math.abs(next) < REST_EPS && !wantForward && !wantReverse) next = 0
 
-  return Math.max(-MAX_SPEED_MPH, Math.min(MAX_SPEED_MPH, next))
+  const cap = Math.max(1, Math.min(MAX_SPEED_MPH, maxSpeedMph))
+  return Math.max(-cap, Math.min(cap, next))
+}
+
+/**
+ * Sticky-dirt helper: if already faster than the off-road cap, drag toward it.
+ * Call BEFORE stepSignedSpeedMph when offRoad, so the next integrate can't
+ * keep you at highway speed in the desert.
+ */
+export function dragTowardOffRoadCap(signedMph: number, dt: number): number {
+  const cap = OFF_ROAD_MAX_SPEED_MPH
+  const abs = Math.abs(signedMph)
+  if (abs <= cap) return signedMph
+  const t = Math.max(0, Math.min(dt, 0.05))
+  const next = abs - OFF_ROAD_DRAG_MPH_S * t
+  const clamped = Math.max(cap, next)
+  return Math.sign(signedMph) * clamped
 }
 
 /**

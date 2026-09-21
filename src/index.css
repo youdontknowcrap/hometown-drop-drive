@@ -338,6 +338,27 @@ kbd {
   font-weight: 600;
 }
 
+.speedo-offroad {
+  margin: 0.35rem 0 0;
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #3e2723;
+  background: linear-gradient(90deg, #ffb74d, #ff8a65);
+  box-shadow: 0 0 12px rgba(255, 138, 101, 0.45);
+}
+
+.speedo[data-offroad='1'] {
+  box-shadow: 0 8px 28px rgba(15, 40, 70, 0.25), 0 0 0 2px rgba(255, 138, 101, 0.55);
+}
+
+.speedo[data-offroad='1'] .speedo-bar {
+  background: linear-gradient(90deg, #ffb74d, #ef6c00);
+}
+
 .speedo-alt {
   margin: 0.2rem 0 0;
   font-size: 0.78rem;

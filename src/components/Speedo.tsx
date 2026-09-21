@@ -21,12 +21,15 @@ export function Speedo() {
   const barRef = useRef<HTMLDivElement>(null)
   const sanityRef = useRef<HTMLParagraphElement>(null)
   const altRef = useRef<HTMLParagraphElement>(null)
+  const offRoadRef = useRef<HTMLParagraphElement>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let raf = 0
     const tick = () => {
       const mph = carPose.ready ? Math.abs(carPose.speedMph) : 0
       const signed = carPose.ready ? carPose.speedMph : 0
+      const offRoad = carPose.ready && carPose.offRoad
       if (valueRef.current) {
         valueRef.current.textContent = String(Math.round(mph))
       }
@@ -50,6 +53,12 @@ export function Speedo() {
           altRef.current.textContent = '— m MSL'
         }
       }
+      if (offRoadRef.current) {
+        offRoadRef.current.hidden = !offRoad
+      }
+      if (rootRef.current) {
+        rootRef.current.dataset.offroad = offRoad ? '1' : '0'
+      }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
@@ -57,7 +66,13 @@ export function Speedo() {
   }, [])
 
   return (
-    <div className="speedo" aria-live="polite" title="Speed (mph) + altitude MSL — true scale">
+    <div
+      ref={rootRef}
+      className="speedo"
+      data-offroad="0"
+      aria-live="polite"
+      title="Speed (mph) + altitude MSL — true scale"
+    >
       <div className="speedo-readout">
         <span ref={valueRef} className="speedo-value">
           0
@@ -68,6 +83,9 @@ export function Speedo() {
         <div ref={barRef} className="speedo-bar" style={{ width: '0%' }} />
       </div>
       <p className="speedo-cap">cap {MAX_SPEED_MPH}</p>
+      <p className="speedo-offroad" ref={offRoadRef} hidden>
+        OFF ROAD −50%
+      </p>
       <p
         className="speedo-alt"
         ref={altRef}

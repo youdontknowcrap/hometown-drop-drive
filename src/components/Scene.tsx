@@ -15,6 +15,7 @@ import { releaseDriveFocus, type DriveKeys } from '../hooks/useKeyboard'
 import { polylineToLocal, type LatLng } from '../lib/geo'
 import { nearestOnNetwork, networkBounds } from '../lib/roadMesh'
 import type { StreetWay } from '../lib/osmStreets'
+import { buildRoadSurfaceWays } from '../lib/roadSurface'
 import type { BuildingBox } from '../lib/osmBuildings'
 import {
   flatHeightGrid,
@@ -52,8 +53,9 @@ type SceneProps = {
 }
 
 /**
- * Neighborhood street grid. Soft leave-the-asphalt play, then a hard
- * ~200 ft corridor wall (RoadContainment) — not curb-hugging Autopia rails.
+ * Neighborhood street grid. Soft leave-the-asphalt (bump + 50% speed via
+ * roadSurface), then a hard ~200 ft corridor wall (RoadContainment) — not
+ * curb-hugging Autopia rails.
  * Blue RouteLine is GPS only (set/clear destination in the HUD).
  *
  * Terrain: Terrarium first, Open-Meteo elev fallback, quiet flat last.
@@ -88,6 +90,12 @@ export function Scene({
 
   const localWays = useMemo(
     () => localStreets.map((s) => s.points),
+    [localStreets],
+  )
+
+  /** Half-width ribbons for soft off-road (bump + 50% speed) — not the 200 ft wall. */
+  const roadSurfaceWays = useMemo(
+    () => buildRoadSurfaceWays(localStreets),
     [localStreets],
   )
 
@@ -249,6 +257,7 @@ export function Scene({
             spawnKey={routeVersion}
             heightGrid={heightGrid}
             paintHex={paintHex}
+            roadSurfaceWays={roadSurfaceWays}
           />
           <RoadContainment
             ways={localWays}
