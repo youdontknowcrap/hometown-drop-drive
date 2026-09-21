@@ -23,6 +23,10 @@
  */
 
 import { projectOntoPath } from './guidance'
+import {
+  nearestCenterlineOnWays,
+  type LoadedWayPoly,
+} from './streetGraph'
 
 /** On-road AP cap (mph). Manual / cruise stay at MAX_SPEED_MPH (~110). */
 export const AUTOPILOT_MAX_SPEED_MPH = 200
@@ -35,6 +39,12 @@ export const AUTOPILOT_SNAP_PER_S = 4.5
 
 /** Cap how far one frame may yank XZ toward the line (meters). */
 export const AUTOPILOT_SNAP_MAX_M = 3.5
+
+/**
+ * If path look-ahead sits farther than this from a loaded centerline,
+ * re-snap aim onto asphalt this frame (don't drive into dirt).
+ */
+export const AP_OFF_ASPHALT_M = 12
 
 /**
  * Look-ahead along the path (meters). Scales a bit with speed so the nose
@@ -90,6 +100,11 @@ export function followPathSnapSlide(
   path: Array<[number, number, number]>,
   speedMs: number,
   dt: number,
+  /**
+   * Loaded asphalt centerlines near the car. When path look-ahead leaves
+   * asphalt vs these, re-snap aim onto the nearest centerline this frame.
+   */
+  centerlineWays?: LoadedWayPoly[],
 ): AutopilotFollow {
   const fail: AutopilotFollow = {
     x: carX,
@@ -106,12 +121,55 @@ export function followPathSnapSlide(
   if (!hit) return fail
 
   const look = autopilotLookAheadM(speedMs)
-  const target = pointAtArcLength(path, hit.sAlong, look)
+  let target = pointAtArcLength(path, hit.sAlong, look)
   const end = path[path.length - 1]
   const distToEnd = Math.hypot(end[0] - carX, end[2] - carZ)
 
+  // LEARNING (Joey peel-off): if blue look-ahead already left asphalt relative
+  // to loaded ways, do NOT aim into dirt — re-snap onto nearest centerline and
+  // aim along its tangent (preferring the direction of path progress).
+  let snapX = hit.x
+  let snapZ = hit.z
   let dirX = target.x - carX
   let dirZ = target.z - carZ
+  if (centerlineWays && centerlineWays.length > 0) {
+    const la = nearestCenterlineOnWays(
+      centerlineWays,
+      target.x,
+      target.z,
+      AP_OFF_ASPHALT_M + 24,
+    )
+    if (la && la.dist > AP_OFF_ASPHALT_M) {
+      target = { x: la.x, z: la.z }
+      // Flip tangent if it points away from path progress.
+      const prog = Math.hypot(dirX, dirZ) > 1e-6
+        ? (la.dirX * dirX + la.dirZ * dirZ)
+        : 1
+      const sign = prog >= 0 ? 1 : -1
+      dirX = la.dirX * sign
+      dirZ = la.dirZ * sign
+    } else if (la) {
+      // Look-ahead still near asphalt — keep path aim but pin target to ribbon.
+      target = { x: la.x, z: la.z }
+      dirX = target.x - carX
+      dirZ = target.z - carZ
+    }
+    const carSnap = nearestCenterlineOnWays(
+      centerlineWays,
+      carX,
+      carZ,
+      AP_OFF_ASPHALT_M + 24,
+    )
+    if (carSnap && carSnap.dist > 1.5) {
+      // Soft-slide toward asphalt if the published path itself drifted.
+      snapX = carSnap.x
+      snapZ = carSnap.z
+    }
+  } else {
+    dirX = target.x - carX
+    dirZ = target.z - carZ
+  }
+
   let len = Math.hypot(dirX, dirZ)
   if (len < 0.35) {
     // Past look-ahead (near end) — aim along last segment tangent.
@@ -128,8 +186,8 @@ export function followPathSnapSlide(
   // Soft snap toward centerline projection (not a hard teleport).
   const t = Math.max(0, Math.min(dt, 0.05))
   const blend = 1 - Math.exp(-AUTOPILOT_SNAP_PER_S * t)
-  let sx = (hit.x - carX) * blend
-  let sz = (hit.z - carZ) * blend
+  let sx = (snapX - carX) * blend
+  let sz = (snapZ - carZ) * blend
   const snapLen = Math.hypot(sx, sz)
   if (snapLen > AUTOPILOT_SNAP_MAX_M && snapLen > 1e-8) {
     const s = AUTOPILOT_SNAP_MAX_M / snapLen

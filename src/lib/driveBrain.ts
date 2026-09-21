@@ -30,7 +30,7 @@ import {
   followPathSnapSlide,
   type AutopilotFollow,
 } from './autopilot'
-import { isLikelyCrowFlight } from './streetGraph'
+import { isLikelyCrowFlight, type LoadedWayPoly } from './streetGraph'
 import {
   MAX_SPEED_MPH,
   OFF_ROAD_MAX_SPEED_MPH,
@@ -60,6 +60,11 @@ export type DriveBrainState = {
 export type DriveBrainRoute = {
   /** Driven path in world XZ — same polyline GPS paints blue. */
   path: Array<[number, number, number]>
+  /**
+   * Loaded asphalt centerlines near the car (AP off-road look-ahead gate).
+   * When look-ahead leaves asphalt vs these, AP re-snaps onto centerline.
+   */
+  centerlineWays?: LoadedWayPoly[]
 }
 
 export type DriveBrainMode = 'manual' | 'cruise' | 'autopilot'
@@ -142,6 +147,7 @@ export function tickDriveBrain(
   pedals: { throttle: boolean; brake: boolean; reverse: boolean },
 ): { command: DriveBrainCommand; state: DriveBrainState } {
   const path = route.path
+  const centerlineWays = route.centerlineWays
   const next: DriveBrainState = {
     cruiseOn: state.cruiseOn,
     cruiseMph: state.cruiseMph,
@@ -213,6 +219,7 @@ export function tickDriveBrain(
         reverse,
         speedCapMph,
         input.steer,
+        centerlineWays,
       ),
     }
   }
@@ -274,6 +281,7 @@ function autopilotPolicy(
   reverse: boolean,
   speedCapMph: number,
   steer: number,
+  centerlineWays?: LoadedWayPoly[],
 ): DriveBrainCommand {
   // Target raise/lower (Joey: AP speed is a commanded hold, not raw pedal).
   if (throttle) {
@@ -293,7 +301,7 @@ function autopilotPolicy(
   const speedMs = pose.signedMph * 0.44704
   let apFollow: AutopilotFollow | null = null
   if (path.length >= 2 && !reverse) {
-    const follow = followPathSnapSlide(pose.x, pose.z, path, speedMs, dt)
+    const follow = followPathSnapSlide(pose.x, pose.z, path, speedMs, dt, centerlineWays)
     if (follow.ok && follow.distToEnd <= AUTOPILOT_ARRIVE_M) {
       state.apOn = false
       apFollow = null

@@ -363,7 +363,10 @@ export default function App() {
             }
           : undefined,
       onAligned: (aligned, meta) => {
-        if (!meta.publishable && aligned.length < 2) return
+        // LEARNING — never publish a non-publishable splice (off-road chord /
+        // soft-fail thin cache). Scheduler already prefers lastGood; this gate
+        // is belt-and-suspenders so blue/AP never jump to dirt mid-drive.
+        if (!meta.publishable || aligned.length < 2) return
         // ONE published polyline: Scene blue RouteLine + GpsDash + AP/guidance
         // all read routeLocal. Near-car splice redraws the blue line too —
         // never AP-on-snapped / blue-on-raw split.

@@ -481,7 +481,11 @@ export function Car({
         onRoad,
       },
       input,
-      { path },
+      {
+        path,
+        // AP off-asphalt safety: re-snap look-ahead onto loaded centerlines.
+        centerlineWays: roadSurfaceWays,
+      },
       brainState.current,
       dt,
       pedals,
