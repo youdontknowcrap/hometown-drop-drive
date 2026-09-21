@@ -12,6 +12,10 @@ import {
   type XzPoint,
 } from '../lib/roadMesh'
 import { widthForHighway, type StreetKind } from '../lib/osmStreets'
+import {
+  ROAD_DENSIFY_CELL_FRAC,
+  ROAD_Y_BIAS_M,
+} from '../lib/roadHeights'
 import { sampleHeight, type HeightGrid } from '../lib/terrarium'
 
 export type LocalStreet = {
@@ -29,18 +33,6 @@ type RoadProps = {
   /** Terrarium (or flat) — ribbons are draped so asphalt follows hills. */
   heightGrid: HeightGrid
 }
-
-/**
- * Extra meters above sampleHeight for ribbon / paint / curb.
- *
- * LEARNING — why bias on top of draping?
- *   Ground and road both call sampleHeight, but 5× arcade hills + a coarser
- *   ribbon (even after densify) still leave near-coplanar z-fights: desert
- *   triangles can win the depth test and "eat" asphalt on slopes. A few
- *   tenths of a meter lift keeps the black band readable without floating the
- *   car (Car pins Y to the same sampler, not to the ribbon mesh).
- */
-const ROAD_Y_BIAS_M = 0.4
 
 function arraysToGeometry(built: MeshArrays | null): THREE.BufferGeometry | null {
   if (!built || built.positions.length < 9) return null
@@ -88,13 +80,18 @@ function drapeGeometry(
     pos.setY(i, pos.getY(i) + sampleHeight(grid, x, z))
   }
   pos.needsUpdate = true
+  // Recompute after drape — slopes change normals; DoubleSide materials keep both faces.
   geo.computeVertexNormals()
   return geo
 }
 
-/** Densify OSM centerline to ~cellSize so draped chords don't cut through hills. */
+/**
+ * Densify OSM centerline tighter than cellSize so draped chords track 5× hills.
+ * LEARNING: 1× cellSize still left mid-segment desert poking through on steep
+ * Ridgecrest slopes; 0.5× puts ribbon verts on a finer hill frequency.
+ */
 function pathForDrape(path: XzPoint[], grid: HeightGrid): XzPoint[] {
-  const maxSeg = Math.max(8, grid.cellSize)
+  const maxSeg = Math.max(4, grid.cellSize * ROAD_DENSIFY_CELL_FRAC)
   return densifyPath(path, maxSeg)
 }
 
@@ -108,9 +105,9 @@ function pathForDrape(path: XzPoint[], grid: HeightGrid): XzPoint[] {
  * read. Ribbons are raised, DoubleSide, and multiply a near-black tint so the
  * paved band is obvious even when the albedo map is mid-gray.
  *
- * Playtest (hills): streets disappeared on Ridgecrest slopes — coarse OSM
- * verts + tiny Y bias let Ground poke through. Densify + ROAD_Y_BIAS_M +
- * polygonOffset / renderOrder so asphalt stays on top of the desert mesh.
+ * Playtest (hills): 0.4 m bias + 1× densify still let Ground / FarGround eat
+ * streets on 5× slopes. Harder fix: ~1.25 m ROAD_Y_BIAS_M, 0.5× densify,
+ * stronger polygonOffset / renderOrder, plus Ground trench (see roadHeights).
  */
 export function Road({ streets, heightGrid }: RoadProps) {
   const [diff, nor] = useTexture(
@@ -182,7 +179,7 @@ export function Road({ streets, heightGrid }: RoadProps) {
   return (
     <group>
       {built.pavedRibbon ? (
-        <mesh geometry={built.pavedRibbon} receiveShadow renderOrder={1}>
+        <mesh geometry={built.pavedRibbon} receiveShadow renderOrder={2}>
           <meshStandardMaterial
             map={diff}
             normalMap={nor}
@@ -194,26 +191,27 @@ export function Road({ streets, heightGrid }: RoadProps) {
             emissiveIntensity={0.2}
             side={THREE.DoubleSide}
             polygonOffset
-            polygonOffsetFactor={-2}
-            polygonOffsetUnits={-2}
+            polygonOffsetFactor={-6}
+            polygonOffsetUnits={-6}
+            depthWrite
           />
         </mesh>
       ) : null}
       {built.pavedCurb ? (
-        <mesh geometry={built.pavedCurb} receiveShadow renderOrder={2}>
+        <mesh geometry={built.pavedCurb} receiveShadow renderOrder={3}>
           <meshStandardMaterial
             color="#0a0a0c"
             roughness={0.95}
             metalness={0}
             side={THREE.DoubleSide}
             polygonOffset
-            polygonOffsetFactor={-2}
-            polygonOffsetUnits={-2}
+            polygonOffsetFactor={-6}
+            polygonOffsetUnits={-6}
           />
         </mesh>
       ) : null}
       {built.pavedPaint ? (
-        <mesh geometry={built.pavedPaint} renderOrder={3}>
+        <mesh geometry={built.pavedPaint} renderOrder={4}>
           <meshStandardMaterial
             color="#f7f7f0"
             emissive="#3a3a30"
@@ -221,15 +219,15 @@ export function Road({ streets, heightGrid }: RoadProps) {
             roughness={0.55}
             metalness={0}
             polygonOffset
-            polygonOffsetFactor={-3}
-            polygonOffsetUnits={-3}
+            polygonOffsetFactor={-8}
+            polygonOffsetUnits={-8}
             side={THREE.DoubleSide}
           />
         </mesh>
       ) : null}
 
       {built.serviceRibbon ? (
-        <mesh geometry={built.serviceRibbon} receiveShadow renderOrder={1}>
+        <mesh geometry={built.serviceRibbon} receiveShadow renderOrder={2}>
           <meshStandardMaterial
             map={diff}
             normalMap={nor}
@@ -240,35 +238,35 @@ export function Road({ streets, heightGrid }: RoadProps) {
             emissiveIntensity={0.15}
             side={THREE.DoubleSide}
             polygonOffset
-            polygonOffsetFactor={-2}
-            polygonOffsetUnits={-2}
+            polygonOffsetFactor={-6}
+            polygonOffsetUnits={-6}
           />
         </mesh>
       ) : null}
       {built.serviceCurb ? (
-        <mesh geometry={built.serviceCurb} receiveShadow renderOrder={2}>
+        <mesh geometry={built.serviceCurb} receiveShadow renderOrder={3}>
           <meshStandardMaterial
             color="#12100e"
             roughness={0.95}
             metalness={0}
             side={THREE.DoubleSide}
             polygonOffset
-            polygonOffsetFactor={-2}
-            polygonOffsetUnits={-2}
+            polygonOffsetFactor={-6}
+            polygonOffsetUnits={-6}
           />
         </mesh>
       ) : null}
 
       {built.dirtRibbon ? (
-        <mesh geometry={built.dirtRibbon} receiveShadow renderOrder={1}>
+        <mesh geometry={built.dirtRibbon} receiveShadow renderOrder={2}>
           <meshStandardMaterial
             color="#6b4a2e"
             roughness={1}
             metalness={0}
             side={THREE.DoubleSide}
             polygonOffset
-            polygonOffsetFactor={-2}
-            polygonOffsetUnits={-2}
+            polygonOffsetFactor={-6}
+            polygonOffsetUnits={-6}
           />
         </mesh>
       ) : null}

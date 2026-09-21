@@ -18,6 +18,10 @@ import { nearestOnNetwork, networkBounds } from '../lib/roadMesh'
 import type { StreetWay } from '../lib/osmStreets'
 import { buildRoadSurfaceWays } from '../lib/roadSurface'
 import {
+  buildRoadTrenchWays,
+  CAR_CLEARANCE_M,
+} from '../lib/roadHeights'
+import {
   clearRoadOverlappingSolidColliders,
   type BuildingBox,
 } from '../lib/osmBuildings'
@@ -130,6 +134,15 @@ export function Scene({
   /** Coarse skyline mesh (~12 km); null until far fetch lands (or permanently if both paths fail). */
   const [farHeightGrid, setFarHeightGrid] = useState<HeightGrid | null>(null)
 
+  /**
+   * Widened corridors for Ground / FarGround trench dig — cellSize-aware so
+   * coarse desert verts still fall under ribbons (see roadHeights).
+   */
+  const roadTrenchWays = useMemo(
+    () => buildRoadTrenchWays(localStreets, heightGrid.cellSize),
+    [localStreets, heightGrid.cellSize],
+  )
+
   // Recompute sun every minute (and when Drop origin changes).
   const [nowTick, setNowTick] = useState(() => Date.now())
   useEffect(() => {
@@ -209,7 +222,7 @@ export function Scene({
 
   const spawnWithHeight: [number, number, number] = [
     spawn[0],
-    sampleHeight(heightGrid, spawn[0], spawn[2]) + 0.6,
+    sampleHeight(heightGrid, spawn[0], spawn[2]) + CAR_CLEARANCE_M,
     spawn[2],
   ]
 
@@ -264,7 +277,7 @@ export function Scene({
 
       <Suspense fallback={null}>
         <Physics gravity={[0, -9.81, 0]} interpolate>
-          <Ground heightGrid={heightGrid} />
+          <Ground heightGrid={heightGrid} roadTrenchWays={roadTrenchWays} />
           <Car
             keys={keys}
             path={drapedRoute}
@@ -289,7 +302,7 @@ export function Scene({
         </Physics>
         {/* Far skyline: visual only — outside Physics, no car colliders. */}
         {farHeightGrid ? (
-          <FarGround nearGrid={heightGrid} farGrid={farHeightGrid} />
+          <FarGround nearGrid={heightGrid} farGrid={farHeightGrid} roadTrenchWays={roadTrenchWays} />
         ) : null}
         <Road streets={localStreets} heightGrid={heightGrid} />
         {/* Floating street names — world-space Text, cull near car (see StreetLabels). */}

@@ -6,6 +6,8 @@ import {
   sampleHeight,
   type HeightGrid,
 } from '../lib/terrarium'
+import { trenchDepressionAt } from '../lib/roadHeights'
+import type { RoadSurfaceWay } from '../lib/roadSurface'
 
 /**
  * Visual-only far LOD terrain ring (skyline / distant mountains).
@@ -19,6 +21,9 @@ import {
  *
  * Soft blend: inside the near AABB we skip (hole). In a FAR_BLEND_M band we
  * lerp toward near sampleHeight so the seam is not a cliff.
+ *
+ * Road trench: in the blend ring, nearY can still cover edge ribbons. Apply
+ * the same corridor dig so FarGround doesn’t flash desert over asphalt there.
  */
 
 const DESERT_REPEAT_M = 80
@@ -26,6 +31,7 @@ const DESERT_REPEAT_M = 80
 type FarGroundProps = {
   nearGrid: HeightGrid
   farGrid: HeightGrid
+  roadTrenchWays?: RoadSurfaceWay[]
 }
 
 function prepMaps(textures: THREE.Texture | THREE.Texture[]) {
@@ -72,7 +78,11 @@ function farBlendWeight(
   return t * t * (3 - 2 * t)
 }
 
-export function FarGround({ nearGrid, farGrid }: FarGroundProps) {
+export function FarGround({
+  nearGrid,
+  farGrid,
+  roadTrenchWays = [],
+}: FarGroundProps) {
   const [diff, nor] = useTexture(
     ['/textures/aerial_sand_diff_1k.jpg', '/textures/aerial_sand_nor_gl_1k.jpg'],
     prepMaps,
@@ -93,9 +103,6 @@ export function FarGround({ nearGrid, farGrid }: FarGroundProps) {
     geo.rotateX(-Math.PI / 2)
 
     const pos = geo.attributes.position
-    // Drop interior verts slightly and mark for index cull via NaN Y… simpler:
-    // set interior to near height − small epsilon so z-fight is rare; opacity
-    // still shows far outside. Prefer true hole via index rebuild below.
     const keep: boolean[] = new Array(pos.count)
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i) + centerX
@@ -103,14 +110,16 @@ export function FarGround({ nearGrid, farGrid }: FarGroundProps) {
       const w = farBlendWeight(x, z, near, FAR_BLEND_M)
       keep[i] = w > 0.02
       const farY = sampleHeight(farGrid, x, z)
+      // Dig only the near-influenced contribution so blend-ring ribbons stay clear.
+      const trench = trenchDepressionAt(x, z, roadTrenchWays) * (1 - w)
       if (w <= 0) {
         // Inside near: match near height (hidden under near Ground).
-        pos.setY(i, sampleHeight(nearGrid, x, z) - 0.15)
+        pos.setY(i, sampleHeight(nearGrid, x, z) - 0.15 - trench)
       } else if (w >= 1) {
         pos.setY(i, farY)
       } else {
         const nearY = sampleHeight(nearGrid, x, z)
-        pos.setY(i, nearY * (1 - w) + farY * w)
+        pos.setY(i, nearY * (1 - w) + farY * w - trench)
       }
     }
     pos.needsUpdate = true
@@ -134,7 +143,7 @@ export function FarGround({ nearGrid, farGrid }: FarGroundProps) {
 
     geo.computeVertexNormals()
     return { geometry: geo, centerX, centerZ, size }
-  }, [nearGrid, farGrid])
+  }, [nearGrid, farGrid, roadTrenchWays])
 
   const tiles = Math.max(8, size / DESERT_REPEAT_M)
   diff.repeat.set(tiles, tiles)
@@ -145,7 +154,7 @@ export function FarGround({ nearGrid, farGrid }: FarGroundProps) {
       geometry={geometry}
       position={[centerX, 0, centerZ]}
       receiveShadow
-      // Slightly push into depth buffer so near Ground wins on overlap pixels.
+      // Behind near Ground (0) and Road (2+); positive offset pushes into depth.
       renderOrder={-1}
     >
       <meshStandardMaterial
@@ -156,8 +165,8 @@ export function FarGround({ nearGrid, farGrid }: FarGroundProps) {
         // Slightly cooler / muted so distant ring reads as haze skyline.
         color="#d9c9a8"
         polygonOffset
-        polygonOffsetFactor={1}
-        polygonOffsetUnits={1}
+        polygonOffsetFactor={2}
+        polygonOffsetUnits={2}
       />
     </mesh>
   )

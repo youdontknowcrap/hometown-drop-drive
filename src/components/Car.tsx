@@ -21,6 +21,7 @@ import {
   sampleHeight,
   type HeightGrid,
 } from '../lib/terrarium'
+import { CAR_CLEARANCE_M } from '../lib/roadHeights'
 import {
   isOnRoadSurface,
   type RoadSurfaceWay,
@@ -32,8 +33,6 @@ const _quat = new THREE.Quaternion()
 const _yawAxis = new THREE.Vector3(0, 1, 0)
 const _yawQ = new THREE.Quaternion()
 
-/** How high the RigidBody center sits above sampled ground. */
-const CAR_CLEARANCE_M = 0.55
 
 /**
  * Arcade leave-asphalt jolt (edge-triggered on→off only — never every frame).
@@ -351,7 +350,8 @@ export function Car({
 
     const speedMs = signedMph.current * MPH_TO_MS
 
-    // --- Terrain follow: pin Y to height sample (relative to spawn elev)
+    // --- Terrain follow: pin Y to height sample (relative to spawn elev).
+    // Clearance tracks ROAD_Y_BIAS_M (roadHeights) so the body sits on asphalt.
     const groundY = sampleHeight(heightGrid, t.x, t.z)
     let wantY = groundY + CAR_CLEARANCE_M
 

@@ -119,7 +119,7 @@ Decode: elev_m = (R × 256 + G + B / 256) − 32768
 
 We displace the ground under the loaded street bbox, drape asphalt + GPS line, and pin the car’s Y to a bilinear sample. Heights are **relative to spawn elevation** so Drop doesn’t launch into the sky, then ×**~5 arcade exaggeration** so basin hills read in a chase cam (HUD + speedo MSL undo that factor). A separate **far LOD ring** (~12 km, visual only, Terrarium z8–z9 or Open-Meteo) draws distant mountains beyond the near bbox. Tile fetch failure → flat ground (still playable).
 
-Playtest fix (hills eat roads): OSM centerlines are densified to ~`cellSize` before ribbon build, ribbons get ~**0.4 m** Y bias above `sampleHeight`, and asphalt materials use stronger `polygonOffset` / `renderOrder` so Ground doesn’t swallow the black band on Ridgecrest slopes. The car still pins Y to the same sampler (no float above a buried ribbon).
+Playtest fix (hills eat roads): densify OSM centerlines to **0.5×`cellSize`**, raise ribbons ~**1.25 m** above `sampleHeight` (arcade curb), dig a matching **desert trench** under road corridors on Ground / FarGround blend, and strengthen `polygonOffset` / `renderOrder`. `sampleHeight` itself is unchanged — the car still pins Y to the same sampler with clearance a hair above the bias so it sits on asphalt.
 
 This works **US-wide** for a later cross-country pass. **Road streaming** (issue #11) is separate — elevation already follows lat/lng; OSM streets are still a ~3 km Overpass box today.
 

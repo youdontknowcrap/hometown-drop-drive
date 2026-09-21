@@ -3,6 +3,10 @@ import { useTexture } from '@react-three/drei'
 import { RigidBody, CuboidCollider } from '@react-three/rapier'
 import * as THREE from 'three'
 import { sampleHeight, type HeightGrid } from '../lib/terrarium'
+import {
+  trenchDepressionAt,
+} from '../lib/roadHeights'
+import type { RoadSurfaceWay } from '../lib/roadSurface'
 
 /** World-meter desert playfield. 1 UV tile = 20 m so speed is visible off-road too. */
 const DESERT_REPEAT_M = 20
@@ -17,6 +21,11 @@ const GROUND_HALF_H = 0.5
 
 type GroundProps = {
   heightGrid: HeightGrid
+  /**
+   * Widened road corridors for the desert trench pass (see buildRoadTrenchWays).
+   * Empty → no trench (flat / loading).
+   */
+  roadTrenchWays?: RoadSurfaceWay[]
 }
 
 function prepMaps(textures: THREE.Texture | THREE.Texture[]) {
@@ -34,8 +43,15 @@ function prepMaps(textures: THREE.Texture | THREE.Texture[]) {
  *
  * Vertex Y = sampleHeight(grid, x, z) — relative to spawn elev, so the Drop
  * point sits near y=0 and surrounding hills read as hills, not a flying carpet.
+ *
+ * LEARNING — road trench:
+ *   Bias + densify alone still lose depth fights on 5× slopes because Ground
+ *   triangles are a different triangulation than the ribbon. When a vert falls
+ *   under a road corridor we lower it by ROAD_TRENCH_M so asphalt sits in a
+ *   shallow dug channel. sampleHeight() is untouched — Car / Buildings still
+ *   pin to the sampler; only this visual mesh is depressed.
  */
-export function Ground({ heightGrid }: GroundProps) {
+export function Ground({ heightGrid, roadTrenchWays = [] }: GroundProps) {
   const [diff, nor] = useTexture(
     ['/textures/aerial_sand_diff_1k.jpg', '/textures/aerial_sand_nor_gl_1k.jpg'],
     prepMaps,
@@ -59,7 +75,9 @@ export function Ground({ heightGrid }: GroundProps) {
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i) + centerX
       const z = pos.getZ(i) + centerZ
-      pos.setY(i, sampleHeight(heightGrid, x, z))
+      const y = sampleHeight(heightGrid, x, z)
+      const trench = trenchDepressionAt(x, z, roadTrenchWays)
+      pos.setY(i, y - trench)
     }
     pos.needsUpdate = true
     geo.computeVertexNormals()
@@ -68,7 +86,7 @@ export function Ground({ heightGrid }: GroundProps) {
     const floorY = heightGrid.minRel - GROUND_HALF_H * 2
 
     return { geometry: geo, centerX, centerZ, size, floorY }
-  }, [heightGrid])
+  }, [heightGrid, roadTrenchWays])
 
   const tiles = Math.max(4, size / DESERT_REPEAT_M)
   diff.repeat.set(tiles, tiles)
@@ -78,7 +96,8 @@ export function Ground({ heightGrid }: GroundProps) {
 
   return (
     <>
-      {/* Visual terrain — displaced mesh, no collider (car pins Y). */}
+      {/* Visual terrain — displaced mesh, no collider (car pins Y). renderOrder 0
+          so Road (2+) paints after; no polygonOffset fight with asphalt. */}
       <mesh
         geometry={geometry}
         position={[centerX, 0, centerZ]}

@@ -136,8 +136,8 @@ export type MeshArrays = {
  *   at those nodes; after we add sampleHeight, chords between verts are straight
  *   in 3D while the Ground mesh (cellSize ≈ tens of m, 5× arcade hills) follows
  *   the slope. Mid-segment desert then pokes through / buries the asphalt.
- *   Densifying to ~heightGrid.cellSize puts ribbon verts on the same hill
- *   frequency as the terrain mesh so draping actually sticks.
+ *   Densifying to ~0.5×heightGrid.cellSize puts ribbon verts on a finer hill
+ *   frequency than the terrain mesh so draped chords stick on 5× slopes.
  */
 export function densifyPath(path: XzPoint[], maxSegLen: number): XzPoint[] {
   if (path.length < 2 || !(maxSegLen > 0)) return path
