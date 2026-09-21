@@ -645,3 +645,145 @@ kbd {
   outline: 2px solid var(--accent);
   border-color: var(--accent);
 }
+
+/* —— Intro / blue marble first-run (no default Ridgecrest Drop) —— */
+
+.intro {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: #02040a;
+}
+
+.intro-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.intro-canvas canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.intro-ui {
+  position: relative;
+  z-index: 2;
+  width: min(34rem, calc(100% - 2rem));
+  pointer-events: auto;
+  padding: 1.35rem 1.5rem 1.5rem;
+  border-radius: 18px;
+  background: rgba(8, 16, 32, 0.72);
+  border: 1px solid rgba(129, 212, 250, 0.28);
+  box-shadow:
+    0 18px 50px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(10px);
+  color: #e3f2fd;
+}
+
+.intro-header {
+  margin-bottom: 1rem;
+}
+
+.intro-kicker {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #81d4fa;
+}
+
+.intro-title {
+  margin: 0.35rem 0 0;
+  font-size: clamp(1.35rem, 3vw, 1.85rem);
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: #fff;
+}
+
+.intro-tagline {
+  margin: 0.4rem 0 0;
+  color: #b0bec5;
+  font-size: 0.95rem;
+}
+
+.intro-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.intro-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #90caf9;
+}
+
+.intro-row {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.intro-input {
+  flex: 1 1 14rem;
+  min-width: 0;
+  font: inherit;
+  font-size: 1.05rem;
+  font-weight: 600;
+  padding: 0.75rem 0.9rem;
+  border-radius: 12px;
+  border: 1.5px solid rgba(129, 212, 250, 0.45);
+  background: rgba(255, 255, 255, 0.96);
+  color: #102027;
+}
+
+.intro-input:focus {
+  outline: 2px solid #29b6f6;
+  border-color: #29b6f6;
+}
+
+.intro-input:disabled {
+  opacity: 0.75;
+}
+
+.intro-go {
+  flex: 0 0 auto;
+  font: inherit;
+  font-weight: 800;
+  font-size: 1rem;
+  padding: 0.75rem 1.15rem;
+  border-radius: 12px;
+  border: none;
+  cursor: pointer;
+  color: #fff;
+  background: linear-gradient(180deg, #29b6f6, #0277bd);
+  box-shadow: 0 4px 14px rgba(2, 119, 189, 0.45);
+}
+
+.intro-go:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.intro-go:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.intro-hint {
+  margin: 0.15rem 0 0;
+  font-size: 0.78rem;
+  color: #90a4ae;
+  line-height: 1.35;
+}
+
+.intro-error {
+  margin: 0.15rem 0 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #ff8a80;
+}
