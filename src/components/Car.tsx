@@ -13,7 +13,11 @@ import {
   wheelAngleRad,
 } from '../lib/longitudinal'
 import { sampleDriveInput, stepSteerAngle } from '../lib/driveInput'
-import { sampleHeight, type HeightGrid } from '../lib/terrarium'
+import {
+  relativeHeightToMsl,
+  sampleHeight,
+  type HeightGrid,
+} from '../lib/terrarium'
 
 const _euler = new THREE.Euler()
 const _forward = new THREE.Vector3()
@@ -220,8 +224,9 @@ export function Car({
     steerAngle.current = 0
     carPose.speedMph = 0
     carPose.metersLastSecond = 0
+    carPose.elevMsl = heightGrid.spawnElevMsl
     odometer.current = { x: spawn[0], z: spawn[2], acc: 0, t: 0, last: 0 }
-  }, [spawnKey, spawn])
+  }, [spawnKey, spawn, heightGrid.spawnElevMsl])
 
   useFrame((_state, dt) => {
     const rb = body.current
@@ -260,6 +265,7 @@ export function Car({
     // --- Terrain follow: pin Y to height sample (relative to spawn elev)
     const groundY = sampleHeight(heightGrid, t.x, t.z)
     const wantY = groundY + CAR_CLEARANCE_M
+    // Honest MSL for the speedo: undo VERTICAL_EXAGGERATION baked into groundY.
 
     rb.setLinvel(
       {
@@ -335,6 +341,7 @@ export function Car({
     carPose.speedMph = signedMph.current
     carPose.metersLastSecond = od.last
     carPose.groundY = groundY
+    carPose.elevMsl = relativeHeightToMsl(heightGrid, groundY)
     carPose.ready = true
   })
 

@@ -9,11 +9,18 @@ import { MAX_SPEED_MPH, MPH_TO_MS } from '../lib/longitudinal'
  *   expected ≈ |mph| * 0.44704
  * If mph says 110 and meters/sec says ~49, units are honest. If it still
  * "feels slow," tweak the chase cam — do not multiply mph by a fudge factor.
+ *
+ * Altitude line (m MSL):
+ *   Heights in the playfield mesh are relative to spawn × VERTICAL_EXAGGERATION
+ *   so basin hills read in a toy chase cam. The speedo undoes that factor
+ *   (see carPose.elevMsl / relativeHeightToMsl) so the number matches the
+ *   Terrarium HUD "spawn … m MSL" honesty — arcade mesh, survey readout.
  */
 export function Speedo() {
   const valueRef = useRef<HTMLSpanElement>(null)
   const barRef = useRef<HTMLDivElement>(null)
   const sanityRef = useRef<HTMLParagraphElement>(null)
+  const altRef = useRef<HTMLParagraphElement>(null)
 
   useEffect(() => {
     let raf = 0
@@ -36,6 +43,13 @@ export function Speedo() {
             ? `${mps.toFixed(0)} m/s last sec · expect ~${expect.toFixed(0)}`
             : `expect ~${expect.toFixed(0)} m/s at this mph`
       }
+      if (altRef.current) {
+        if (carPose.ready && Number.isFinite(carPose.elevMsl)) {
+          altRef.current.textContent = `${Math.round(carPose.elevMsl)} m MSL`
+        } else {
+          altRef.current.textContent = '— m MSL'
+        }
+      }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
@@ -43,7 +57,7 @@ export function Speedo() {
   }, [])
 
   return (
-    <div className="speedo" aria-live="polite" title="Speed (mph) — true scale">
+    <div className="speedo" aria-live="polite" title="Speed (mph) + altitude MSL — true scale">
       <div className="speedo-readout">
         <span ref={valueRef} className="speedo-value">
           0
@@ -54,6 +68,13 @@ export function Speedo() {
         <div ref={barRef} className="speedo-bar" style={{ width: '0%' }} />
       </div>
       <p className="speedo-cap">cap {MAX_SPEED_MPH}</p>
+      <p
+        className="speedo-alt"
+        ref={altRef}
+        title="Altitude above sea level (exaggeration undone)"
+      >
+        — m MSL
+      </p>
       <p className="speedo-sanity" ref={sanityRef}>
         —
       </p>

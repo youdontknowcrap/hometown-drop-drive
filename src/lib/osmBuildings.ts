@@ -17,7 +17,7 @@ import { latLngToLocal, metersPerDegree, type LatLng } from './geo'
 import { overpassInterpreter } from './osmApi'
 
 /** Soft cap — neighborhood scenery, not a full city download. */
-export const MAX_BUILDINGS = 70
+export const MAX_BUILDINGS = 150
 /** Ignore footprints smaller than this (m²) — sheds / porch noise. */
 const MIN_AREA_M2 = 40
 /** Default eaves height when OSM has no `height` / `building:levels`. */

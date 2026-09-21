@@ -3,6 +3,7 @@ import { Canvas } from '@react-three/fiber'
 import { Sky, PerspectiveCamera } from '@react-three/drei'
 import { Physics } from '@react-three/rapier'
 import { Ground } from './Ground'
+import { FarGround } from './FarGround'
 import { Car } from './Car'
 import { Road } from './Road'
 import { RoadContainment } from './RoadContainment'
@@ -21,7 +22,7 @@ import {
   waysBounds,
   type HeightGrid,
 } from '../lib/terrarium'
-import { fetchElevationGrid } from '../lib/elevation'
+import { fetchElevationGrid, fetchFarElevationGrid } from '../lib/elevation'
 import { sunAt, sunLightPosition } from '../lib/sun'
 import type { WeatherLook } from '../lib/weather'
 
@@ -40,6 +41,8 @@ type SceneProps = {
   camHeight: number
   /** Optional HUD hook so Joey can see Terrarium / Open-Meteo / flat. */
   onTerrainMessage?: (msg: string) => void
+  /** Far LOD skyline status line for the HUD. */
+  onFarTerrainMessage?: (msg: string) => void
   /** OSM building AABB boxes (may be empty). */
   buildings?: BuildingBox[]
   /** Resolved weather look (Auto or manual preset). */
@@ -54,6 +57,7 @@ type SceneProps = {
  * Blue RouteLine is GPS only (set/clear destination in the HUD).
  *
  * Terrain: Terrarium first, Open-Meteo elev fallback, quiet flat last.
+ * Far LOD ring (~12 km, visual only) for distant mountain silhouette.
  * Sky/sun track Drop lat/lng + local clock; weather drives fog/rain/light.
  */
 export function Scene({
@@ -67,6 +71,7 @@ export function Scene({
   camDistance,
   camHeight,
   onTerrainMessage,
+  onFarTerrainMessage,
   buildings = [],
   weather,
   paintHex,
@@ -97,6 +102,8 @@ export function Scene({
   const [heightGrid, setHeightGrid] = useState<HeightGrid>(() =>
     flatHeightGrid(bounds.centerX, bounds.centerZ, bounds.size, 'Loading elevation…'),
   )
+  /** Coarse skyline mesh (~12 km); null until far fetch lands (or permanently if both paths fail). */
+  const [farHeightGrid, setFarHeightGrid] = useState<HeightGrid | null>(null)
 
   // Recompute sun every minute (and when Drop origin changes).
   const [nowTick, setNowTick] = useState(() => Date.now())
@@ -119,6 +126,8 @@ export function Scene({
     let cancelled = false
     const bb = waysBounds(localWays)
     onTerrainMessage?.('Loading elevation (Terrarium → Open-Meteo)…')
+    onFarTerrainMessage?.('Far terrain: loading…')
+    setFarHeightGrid(null)
 
     void fetchElevationGrid({
       origin,
@@ -128,16 +137,36 @@ export function Scene({
       maxZ: bb.maxZ,
       spawnX: spawn[0],
       spawnZ: spawn[2],
-    }).then((grid) => {
+    }).then(async (grid) => {
       if (cancelled) return
       setHeightGrid(grid)
       onTerrainMessage?.(grid.message)
+
+      // Far skyline only when near elev actually worked (flat = nowhere to hang mountains).
+      if (grid.source === 'flat') {
+        onFarTerrainMessage?.('Far terrain: skipped (near elev flat)')
+        return
+      }
+
+      const far = await fetchFarElevationGrid({
+        origin,
+        spawnX: spawn[0],
+        spawnZ: spawn[2],
+        spawnElevMsl: grid.spawnElevMsl,
+      })
+      if (cancelled) return
+      if (far) {
+        setFarHeightGrid(far)
+        onFarTerrainMessage?.(far.message)
+      } else {
+        onFarTerrainMessage?.('Far terrain: unavailable')
+      }
     })
 
     return () => {
       cancelled = true
     }
-  }, [origin, localWays, bounds, spawn, onTerrainMessage, routeVersion])
+  }, [origin, localWays, bounds, spawn, onTerrainMessage, onFarTerrainMessage, routeVersion])
 
   // Drape the blue GPS line onto the same height samples as the asphalt.
   const drapedRoute = useMemo(
@@ -180,7 +209,11 @@ export function Scene({
         args={[weather.fogColor, weather.fogNear, weather.fogFar]}
       />
 
-      <PerspectiveCamera makeDefault position={[0, 12, 22]} fov={55} />
+      {/*
+        far must clear the ~12 km skyline ring. Default three.js far=2000 would
+        clip El Paso / Sierra silhouette even when fog lets them through.
+      */}
+      <PerspectiveCamera makeDefault position={[0, 12, 22]} fov={55} near={0.4} far={28000} />
       <ambientLight intensity={ambientIntensity} />
       <directionalLight
         castShadow
@@ -228,6 +261,10 @@ export function Scene({
             version={routeVersion}
           />
         </Physics>
+        {/* Far skyline: visual only — outside Physics, no car colliders. */}
+        {farHeightGrid ? (
+          <FarGround nearGrid={heightGrid} farGrid={farHeightGrid} />
+        ) : null}
         <Road streets={localStreets} heightGrid={heightGrid} />
         <RouteLine points={drapedRoute} visible={showRoute} />
         <Rain density={weather.rain ? weather.rainDensity : 0} />

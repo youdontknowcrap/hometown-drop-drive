@@ -338,6 +338,15 @@ kbd {
   font-weight: 600;
 }
 
+.speedo-alt {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+  color: #b3e5fc;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
 .speedo-sanity {
   margin: 0.15rem 0 0;
   font-size: 0.6rem;

@@ -47,6 +47,7 @@ export default function App() {
   const [gpsMessage, setGpsMessage] = useState('')
   const [gpsBusy, setGpsBusy] = useState(false)
   const [terrainMessage, setTerrainMessage] = useState('Elevation: …')
+  const [farTerrainMessage, setFarTerrainMessage] = useState('Far terrain: …')
   const [buildings, setBuildings] = useState<BuildingBox[]>([])
   const [buildingsMessage, setBuildingsMessage] = useState('Buildings: …')
   const [weatherPreset, setWeatherPreset] = useState<WeatherPreset>('auto')
@@ -253,6 +254,7 @@ export default function App() {
           camDistance={camDistance}
           camHeight={camHeight}
           onTerrainMessage={setTerrainMessage}
+          onFarTerrainMessage={setFarTerrainMessage}
           buildings={buildings}
           weather={weather}
           paintHex={paintHex}
@@ -269,6 +271,7 @@ export default function App() {
         hasDestination={hasDestination}
         world={world}
         terrainMessage={terrainMessage}
+        farTerrainMessage={farTerrainMessage}
         buildingsMessage={buildingsMessage}
         weatherSummary={weather.summary}
         weatherPreset={weatherPreset}

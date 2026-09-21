@@ -26,6 +26,8 @@ type HudProps = {
   world: StreetWorld
   /** Terrarium / Open-Meteo / flat status from Scene. */
   terrainMessage?: string
+  /** Far LOD skyline ring status (radius / relief). */
+  farTerrainMessage?: string
   /** Building load status. */
   buildingsMessage?: string
   /** Live or preset weather summary. */
@@ -100,6 +102,7 @@ export function Hud({
   hasDestination,
   world,
   terrainMessage,
+  farTerrainMessage,
   buildingsMessage,
   weatherSummary,
   weatherPreset,
@@ -284,6 +287,11 @@ export function Hud({
           {terrainMessage ? (
             <p className="hud-status" role="status">
               {terrainMessage}
+            </p>
+          ) : null}
+          {farTerrainMessage ? (
+            <p className="hud-status" role="status">
+              {farTerrainMessage}
             </p>
           ) : null}
           {buildingsMessage ? (

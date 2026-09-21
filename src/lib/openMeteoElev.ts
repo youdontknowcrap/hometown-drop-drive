@@ -12,7 +12,7 @@
  *   → { elevation: [meters, …] }
  *
  * We sample a coarse grid across the street bbox, then bilinear-upsample into
- * the same HeightGrid shape Terrarium builds (relative-to-spawn + ~2×).
+ * the same HeightGrid shape Terrarium builds (relative-to-spawn + VERTICAL_EXAGGERATION).
  *
  * Dev can hit `/api/open-meteo/...` (Vite proxy) or the public URL directly.
  */
@@ -20,6 +20,9 @@
 import { localToLatLng } from './geo'
 import {
   flatHeightGrid,
+  VERTICAL_EXAGGERATION,
+  FAR_TERRAIN_RADIUS_M,
+  type FarTerrainFetchOpts,
   type HeightGrid,
   type TerrainFetchOpts,
 } from './terrarium'
@@ -30,11 +33,7 @@ const MAX_COORDS = 100
 const SAMPLE_N = 10
 /** Match Terrarium display grid so Ground / Road / Car share one sampler. */
 const GRID_RES = 96
-/**
- * Same teaching knob as Terrarium: relative heights ×2 so basin relief
- * reads as hills in a toy chase cam. Absolute MSL stays honest on the HUD.
- */
-const VERTICAL_EXAGGERATION = 2
+/** Shared with terrarium.ts — arcade × for basin towns (see that file). */
 
 function elevUrl(lats: number[], lngs: number[]): string[] {
   const qs = `latitude=${lats.map((v) => v.toFixed(5)).join(',')}&longitude=${lngs.map((v) => v.toFixed(5)).join(',')}`
@@ -221,3 +220,98 @@ export function quietFlatGrid(
   return flatHeightGrid(centerX, centerZ, size, 'Flat ground')
 }
 
+
+/**
+ * Coarse Open-Meteo far ring when Terrarium far tiles fail (CORS / proxy).
+ * One ≤100-point batch over ±radiusM, bilinear-upsampled to FAR_GRID_RES.
+ * Visual skyline only — Scene never puts colliders on this mesh.
+ */
+const FAR_SAMPLE_N = 10
+const FAR_UPSAMPLE = 48
+
+export async function fetchOpenMeteoFarHeightGrid(
+  opts: FarTerrainFetchOpts,
+): Promise<HeightGrid | null> {
+  const {
+    origin,
+    spawnX,
+    spawnZ,
+    spawnElevMsl,
+    radiusM = FAR_TERRAIN_RADIUS_M,
+  } = opts
+
+  const size = Math.max(500, radiusM * 2)
+  const originX = spawnX - size * 0.5
+  const originZ = spawnZ - size * 0.5
+
+  try {
+    const n = FAR_SAMPLE_N
+    const lats: number[] = []
+    const lngs: number[] = []
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        const x = originX + (c / (n - 1)) * size
+        const z = originZ + (r / (n - 1)) * size
+        const ll = localToLatLng(x, z, origin)
+        lats.push(ll.lat)
+        lngs.push(ll.lng)
+      }
+    }
+
+    const elevList = await fetchElevBatch(lats, lngs)
+    const coarse = new Float32Array(elevList)
+    let finite = 0
+    for (const e of elevList) if (Number.isFinite(e)) finite++
+    if (finite < 4) {
+      console.warn('[open-meteo far] too few finite samples', finite)
+      return null
+    }
+
+    const cols = FAR_UPSAMPLE
+    const rows = FAR_UPSAMPLE
+    const cellSize = size / (cols - 1)
+    const heights = new Float32Array(cols * rows)
+    let minRel = Infinity
+    let maxRel = -Infinity
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const u = (c / (cols - 1)) * (n - 1)
+        const v = (r / (rows - 1)) * (n - 1)
+        const msl = sampleCoarse(coarse, n, u, v)
+        const relRaw = Number.isFinite(msl) ? msl - spawnElevMsl : 0
+        const rel = relRaw * VERTICAL_EXAGGERATION
+        heights[r * cols + c] = rel
+        if (rel < minRel) minRel = rel
+        if (rel > maxRel) maxRel = rel
+      }
+    }
+    if (!Number.isFinite(minRel)) {
+      minRel = 0
+      maxRel = 0
+    }
+
+    const relief = maxRel - minRel
+    const radiusKm = (size * 0.5) / 1000
+    const message =
+      `Far terrain: ${radiusKm.toFixed(0)} km · Open-Meteo ${n}×${n}` +
+      ` · relief ${relief.toFixed(0)} m (${VERTICAL_EXAGGERATION}×)`
+
+    return {
+      originX,
+      originZ,
+      cellSize,
+      cols,
+      rows,
+      heights,
+      spawnElevMsl,
+      minRel,
+      maxRel,
+      source: 'open-meteo',
+      message,
+    }
+  } catch (err) {
+    console.warn('[open-meteo far] failed', err)
+    return null
+  }
+}

@@ -126,9 +126,11 @@ export function lookFromConditions(opts: {
     (code >= 51 && code <= 67) ||
     (code >= 80 && code <= 82)
 
-  // Fog distances: clear sees far; fog hugs the car.
-  let fogNear = 220
-  let fogFar = 640
+  // Fog distances (meters). Clear/Cloudy must still show the ~12 km skyline
+  // ring — weather softens the silhouette but should not erase it entirely.
+  // True Fog / Storm stay much tighter on purpose.
+  let fogNear = 900
+  let fogFar = 16000
   let fogColor = '#cfe8f5'
   let skyBackground = '#87ceeb'
   let ambientScale = 0.55
@@ -139,6 +141,8 @@ export function lookFromConditions(opts: {
   if (cloud > 40) {
     turbidity = 6 + cloud / 25
     rayleigh = 0.9
+    fogNear = 700
+    fogFar = 14000
     fogColor = '#c5d4e0'
     skyBackground = '#9bb4c8'
     sunScale = 1.05
@@ -146,16 +150,16 @@ export function lookFromConditions(opts: {
   if (cloud > 75) {
     turbidity = 10
     rayleigh = 0.6
-    fogNear = 160
-    fogFar = 480
+    fogNear = 400
+    fogFar = 10000
     fogColor = '#a8b8c8'
     skyBackground = '#7a8fa3'
     ambientScale = 0.45
     sunScale = 0.75
   }
   if (isRain) {
-    fogNear = 120
-    fogFar = 400
+    fogNear = 250
+    fogFar = 7000
     fogColor = '#8a9aaa'
     skyBackground = '#6a7a8a'
     ambientScale = 0.4
@@ -164,8 +168,8 @@ export function lookFromConditions(opts: {
     rayleigh = 0.4
   }
   if (isStorm) {
-    fogNear = 80
-    fogFar = 320
+    fogNear = 120
+    fogFar = 4500
     fogColor = '#5a6a7a'
     skyBackground = '#3d4a58'
     ambientScale = 0.32

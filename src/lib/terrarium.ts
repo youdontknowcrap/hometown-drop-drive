@@ -58,12 +58,14 @@ const GRID_RES = 96
 /**
  * Vertical exaggeration applied to *relative* heights only.
  *
- * WHY ~2×? Ridgecrest / desert basin relief over a ~3 km Drop is often only
- * tens of meters. At 1:1 that reads as a flat parking lot in a toy chase cam.
- * Doubling makes hills obvious without turning the world into a roller coaster.
- * Absolute MSL (spawnElevMsl) stays honest for the HUD.
+ * WHY ~5× (arcade, not survey)? Basin towns like Ridgecrest sit in a broad
+ * valley — real relief over a ~3 km Drop is often only tens of meters. At 1:1
+ * that reads as a flat parking lot in a toy chase cam. ~5× makes near hills
+ * pop without needing military DEM fidelity. Absolute MSL (spawnElevMsl) and
+ * the live speedo altitude stay honest: undo this factor when reporting meters
+ * above sea level (see relativeHeightToMsl / carPose.elevMsl).
  */
-const VERTICAL_EXAGGERATION = 2
+export const VERTICAL_EXAGGERATION = 5
 
 export type HeightGrid = {
   /** Local-X of the grid's -X/−Z corner (meters). */
@@ -112,6 +114,12 @@ export function sampleHeight(grid: HeightGrid, x: number, z: number): number {
   const hx0 = h00 * (1 - tx) + h10 * tx
   const hx1 = h01 * (1 - tx) + h11 * tx
   return hx0 * (1 - tz) + hx1 * tz
+}
+
+
+/** Undo arcade exaggeration → absolute MSL meters (HUD / speedo honesty). */
+export function relativeHeightToMsl(grid: HeightGrid, relY: number): number {
+  return grid.spawnElevMsl + relY / VERTICAL_EXAGGERATION
 }
 
 /** Empty flat grid covering a square playfield (offline / CORS failure). */
@@ -538,4 +546,158 @@ export function waysBounds(ways: Array<Array<[number, number, number]>>): {
     return { minX: -100, maxX: 100, minZ: -100, maxZ: 100 }
   }
   return { minX, maxX, minZ, maxZ }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Far LOD skyline ring — coarse height beyond the near street-bbox mesh.     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How far the skyline mesh reaches from spawn (meters).
+ * Ridgecrest: ~10–12 km reaches El Paso Mtns / Sierra silhouette without
+ * downloading a county-sized DEM. Prefer visible mountains over perfect DEM.
+ */
+export const FAR_TERRAIN_RADIUS_M = 12_000
+
+/** Soft overlap with the near ground so the seam is not a cliff (meters). */
+export const FAR_BLEND_M = 350
+
+/** Coarser than near GRID_RES — skyline silhouette, not driveable detail. */
+const FAR_GRID_RES = 48
+
+/** Lower zoom: one z9 tile ≈ tens of km — a handful covers the far ring. */
+const FAR_DEFAULT_ZOOM = 9
+const FAR_MIN_ZOOM = 8
+const MAX_FAR_TILES = 16
+
+export type FarTerrainFetchOpts = {
+  origin: LatLng
+  spawnX: number
+  spawnZ: number
+  /**
+   * Absolute MSL under spawn from the *near* grid so far + near share one
+   * zero. Do not re-sample spawn independently or the ring floats.
+   */
+  spawnElevMsl: number
+  /** Outer radius in meters (default FAR_TERRAIN_RADIUS_M). */
+  radiusM?: number
+}
+
+/**
+ * Coarse Terrarium height grid out to ~radiusM around spawn (visual skyline).
+ * Uses lower zoom than the near playfield so we stay under MAX_FAR_TILES.
+ * Heights are relative to spawnElevMsl × VERTICAL_EXAGGERATION (same as near).
+ */
+export async function fetchFarHeightGrid(
+  opts: FarTerrainFetchOpts,
+): Promise<HeightGrid | null> {
+  const {
+    origin,
+    spawnX,
+    spawnZ,
+    spawnElevMsl,
+    radiusM = FAR_TERRAIN_RADIUS_M,
+  } = opts
+
+  const size = Math.max(500, radiusM * 2)
+  const centerX = spawnX
+  const centerZ = spawnZ
+  const originX = centerX - size * 0.5
+  const originZ = centerZ - size * 0.5
+
+  try {
+    const corners: LatLng[] = [
+      localToLatLng(originX, originZ, origin),
+      localToLatLng(originX + size, originZ, origin),
+      localToLatLng(originX, originZ + size, origin),
+      localToLatLng(originX + size, originZ + size, origin),
+    ]
+    const spawnLl = localToLatLng(spawnX, spawnZ, origin)
+
+    let zoom = FAR_DEFAULT_ZOOM
+    let plan = collectTileKeys(corners, spawnLl, zoom)
+    while (plan.keys.size > MAX_FAR_TILES && zoom > FAR_MIN_ZOOM) {
+      zoom -= 1
+      plan = collectTileKeys(corners, spawnLl, zoom)
+    }
+    if (plan.keys.size > MAX_FAR_TILES) {
+      console.warn(
+        `[terrarium far] z${zoom} needs ${plan.keys.size} tiles (cap ${MAX_FAR_TILES})`,
+      )
+      return null
+    }
+
+    const tiles = new Map<string, TileElev>()
+    const jobs: Promise<void>[] = []
+    for (const key of plan.keys) {
+      const [, xs, ys] = key.split('/')
+      const tx = Number(xs)
+      const ty = Number(ys)
+      jobs.push(
+        tryFetchTile(zoom, tx, ty).then((tile) => {
+          if (tile) tiles.set(`${zoom}/${tx}/${ty}`, tile)
+        }),
+      )
+    }
+    await Promise.all(jobs)
+
+    if (tiles.size === 0) {
+      console.warn('[terrarium far] 0 tiles decoded')
+      return null
+    }
+
+    const cols = FAR_GRID_RES
+    const rows = FAR_GRID_RES
+    const cellSize = size / (cols - 1)
+    const heights = new Float32Array(cols * rows)
+    let minRel = Infinity
+    let maxRel = -Infinity
+    let finiteSamples = 0
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = originX + c * cellSize
+        const z = originZ + r * cellSize
+        const ll = localToLatLng(x, z, origin)
+        const msl = elevAtLatLng(tiles, ll.lat, ll.lng, zoom)
+        const relRaw = Number.isFinite(msl) ? msl - spawnElevMsl : 0
+        if (Number.isFinite(msl)) finiteSamples++
+        const rel = relRaw * VERTICAL_EXAGGERATION
+        heights[r * cols + c] = rel
+        if (rel < minRel) minRel = rel
+        if (rel > maxRel) maxRel = rel
+      }
+    }
+    if (!Number.isFinite(minRel)) {
+      minRel = 0
+      maxRel = 0
+    }
+
+    const relief = maxRel - minRel
+    const radiusKm = (size * 0.5) / 1000
+    const message =
+      `Far terrain: ${radiusKm.toFixed(0)} km · Terrarium z${zoom}` +
+      ` · ${tiles.size}/${plan.keys.size} tiles` +
+      ` · relief ${relief.toFixed(0)} m (${VERTICAL_EXAGGERATION}×)` +
+      (finiteSamples < cols * rows
+        ? ` · ${finiteSamples}/${cols * rows} hits`
+        : '')
+
+    return {
+      originX,
+      originZ,
+      cellSize,
+      cols,
+      rows,
+      heights,
+      spawnElevMsl,
+      minRel,
+      maxRel,
+      source: 'terrarium',
+      message,
+    }
+  } catch (err) {
+    console.warn('[terrarium far] failed', err)
+    return null
+  }
 }

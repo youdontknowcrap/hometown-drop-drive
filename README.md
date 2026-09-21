@@ -104,7 +104,7 @@ URL:  /api/terrarium/{z}/{x}/{y}.png   (Vite → s3 elevation-tiles-prod)
 Decode: elev_m = (R × 256 + G + B / 256) − 32768
 ```
 
-We displace the ground under the loaded street bbox, drape asphalt + GPS line, and pin the car’s Y to a bilinear sample. Heights are **relative to spawn elevation** so Drop doesn’t launch into the sky. Tile fetch failure → flat ground (still playable).
+We displace the ground under the loaded street bbox, drape asphalt + GPS line, and pin the car’s Y to a bilinear sample. Heights are **relative to spawn elevation** so Drop doesn’t launch into the sky, then ×**~5 arcade exaggeration** so basin hills read in a chase cam (HUD + speedo MSL undo that factor). A separate **far LOD ring** (~12 km, visual only, Terrarium z8–z9 or Open-Meteo) draws distant mountains beyond the near bbox. Tile fetch failure → flat ground (still playable).
 
 This works **US-wide** for a later cross-country pass. **Road streaming** (issue #11) is separate — elevation already follows lat/lng; OSM streets are still a ~3 km Overpass box today.
 
@@ -112,9 +112,15 @@ See `src/lib/terrarium.ts`, `src/components/Ground.tsx`, Vite `/api/terrarium` p
 
 ### Open-Meteo elevation fallback
 
-If Terrarium tiles fail (no proxy / CORS / decode), we sample a ≤100-point lat/lng grid from Open-Meteo elevation, bilinear-upsample to the same height grid, still **relative-to-spawn** with ~2× exaggeration. Both fail → quiet “Flat ground” (no scary sample errors). HUD labels the path: Terrarium / Open-Meteo elev / Flat.
+If Terrarium tiles fail (no proxy / CORS / decode), we sample a ≤100-point lat/lng grid from Open-Meteo elevation, bilinear-upsample to the same height grid, still **relative-to-spawn** with shared `VERTICAL_EXAGGERATION`. Both fail → quiet “Flat ground” (no scary sample errors). HUD labels the path: Terrarium / Open-Meteo elev / Flat, plus a **Far terrain:** line for the skyline ring.
 
 See `src/lib/elevation.ts`, `src/lib/openMeteoElev.ts`, Vite `/api/open-meteo`.
+
+### Far LOD skyline
+
+Near ground only covers street bbox + ~40 m pad — empty horizon in a chase cam. `FarGround` samples a coarse height grid out ~12 km (soft blend at the seam, **no physics colliders**). Clear/Cloudy fog + camera `far` are pushed so silhouettes survive; Fog/Storm presets stay tight on purpose. Speedo shows live **m MSL** under mph.
+
+See `src/lib/terrarium.ts` (`fetchFarHeightGrid`), `src/components/FarGround.tsx`, `src/components/Speedo.tsx`.
 
 ### Sports car skin (Kenney CC0)
 

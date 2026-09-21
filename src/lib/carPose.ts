@@ -19,7 +19,13 @@ export const carPose = {
    * Compare to |speedMph| * 0.447 — they should match when speed is steady.
    */
   metersLastSecond: 0,
-  /** Relative terrain height under the car (m, spawn = 0). */
+  /** Relative terrain height under the car (m, spawn = 0, already × exaggerated). */
   groundY: 0,
+  /**
+   * Absolute altitude above sea level (meters).
+   * Computed as spawnElevMsl + groundY / VERTICAL_EXAGGERATION so the speedo
+   * shows honest MSL even though the mesh is arcade-exaggerated.
+   */
+  elevMsl: 0,
   ready: false,
 }
