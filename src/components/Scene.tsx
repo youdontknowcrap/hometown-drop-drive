@@ -95,6 +95,11 @@ type SceneProps = {
   hardContainment?: boolean
   /** Soft void edge — union of active tile AABBs (local meters). */
   loadedAabb?: LoadedAabb | null
+  /**
+   * Mount Troika StreetLabels. Default OFF from App — skip entirely when
+   * false so driving never pays Text update cost.
+   */
+  streetNamesOn?: boolean
 }
 
 /**
@@ -106,7 +111,7 @@ type SceneProps = {
  * Terrain: Terrarium first, Open-Meteo elev fallback, quiet flat last.
  * Far LOD ring (~12 km, visual only) for distant mountain silhouette.
  * Sky/sun track Drop lat/lng + local clock; weather drives fog/rain/light.
- * Floating street-name labels (StreetLabels) billboard near the car.
+ * Optional floating street-name labels (StreetLabels) — default OFF.
  */
 
 type ElevMorph = ReturnType<typeof createElevMorph>
@@ -168,6 +173,7 @@ export function Scene({
   paintHex,
   hardContainment = true,
   loadedAabb = null,
+  streetNamesOn = false,
 }: SceneProps) {
   const localStreets = useMemo(
     () =>
@@ -679,10 +685,12 @@ export function Scene({
           heightGrid={drapeGrid}
         />
       </Suspense>
-      {/* Troika Text font loads — own boundary so new labels never remount Car. */}
-      <Suspense fallback={null}>
-        <StreetLabels streets={localStreets} heightGrid={drapeGrid} />
-      </Suspense>
+      {/* Troika Text — mount only when HUD Street names ON (default OFF = CPU win). */}
+      {streetNamesOn ? (
+        <Suspense fallback={null}>
+          <StreetLabels streets={localStreets} heightGrid={drapeGrid} />
+        </Suspense>
+      ) : null}
       {/*
         RouteLine outside Physics but MUST stay nested under Suspense: R3F
         Canvas wraps ALL children in one Suspense. Anything that suspends

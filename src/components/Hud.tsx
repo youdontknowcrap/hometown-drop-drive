@@ -44,6 +44,9 @@ type HudProps = {
   /** GPS dial: paint loaded active ways (persisted). 3D streets untouched. */
   gpsLiveStreetsOn: boolean
   onGpsLiveStreetsOn: (on: boolean) => void
+  /** 3D Troika street names (default OFF — CPU win while driving). */
+  streetNamesOn: boolean
+  onStreetNamesOn: (on: boolean) => void
   /** Live or preset weather summary. */
   weatherSummary?: string
   weatherPreset: WeatherPreset
@@ -125,6 +128,8 @@ export function Hud({
   onBuildingsOn,
   gpsLiveStreetsOn,
   onGpsLiveStreetsOn,
+  streetNamesOn,
+  onStreetNamesOn,
   weatherSummary,
   weatherPreset,
   onWeatherPreset,
@@ -330,6 +335,17 @@ export function Hud({
               onChange={(e) => onBuildingsOn(e.target.checked)}
             />
             <span>Buildings {buildingsOn ? 'ON' : 'OFF'}</span>
+          </label>
+          <label
+            className="toggle"
+            title="3D floating street names (Troika). Default OFF for CPU while driving."
+          >
+            <input
+              type="checkbox"
+              checked={streetNamesOn}
+              onChange={(e) => onStreetNamesOn(e.target.checked)}
+            />
+            <span>Street names {streetNamesOn ? 'ON' : 'OFF'}</span>
           </label>
           {tilesMessage ? (
             <p className="hud-status" role="status">

@@ -119,6 +119,27 @@ export default function App() {
     }
   }, [gpsLiveStreetsOn])
 
+  /**
+   * 3D street-name Troika labels (Joey CPU win). Default OFF — no mount while
+   * driving. Persist so a kid who turns them on keeps them after refresh.
+   */
+  const [streetNamesOn, setStreetNamesOn] = useState(() => {
+    try {
+      const v = localStorage.getItem('hdd-street-names')
+      if (v == null) return false
+      return v === '1' || v === 'true'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('hdd-street-names', streetNamesOn ? '1' : '0')
+    } catch {
+      /* private mode */
+    }
+  }, [streetNamesOn])
+
   const booted = useRef(false)
   /** Destination lat/lng kept for reroutes even while polyline updates. */
   const destRef = useRef<LatLng | null>(null)
@@ -504,6 +525,7 @@ export default function App() {
           buildings={stream.activeBuildings}
           weather={weather}
           paintHex={paintHex}
+          streetNamesOn={streetNamesOn}
         />
       </div>
       <Hud
@@ -523,6 +545,8 @@ export default function App() {
         onBuildingsOn={setBuildingsOn}
         gpsLiveStreetsOn={gpsLiveStreetsOn}
         onGpsLiveStreetsOn={setGpsLiveStreetsOn}
+        streetNamesOn={streetNamesOn}
+        onStreetNamesOn={setStreetNamesOn}
         tilesMessage={`Tiles: ${stream.activeTileCount} loaded · streaming`}
         streamMessage={stream.streamMessage}
         queueMessage={
