@@ -233,13 +233,14 @@ export async function fetchWaysInBbox(
   west: number,
   north: number,
   east: number,
+  signal?: AbortSignal,
 ): Promise<StreetWay[]> {
   const query = `[out:json][timeout:25];
 (
   way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road|track|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"](${south},${west},${north},${east});
 );
 out geom;`
-  const res = await overpassInterpreter(query)
+  const res = await overpassInterpreter(query, signal)
   const data = (await res.json()) as { elements?: OverpassWay[] }
   const ways: StreetWay[] = []
   for (const el of data.elements ?? []) {

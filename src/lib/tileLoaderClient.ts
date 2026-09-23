@@ -152,8 +152,9 @@ export async function mainFetchWays(
   west: number,
   north: number,
   east: number,
+  signal?: AbortSignal,
 ): Promise<StreetWay[]> {
-  return fetchWaysInBbox(south, west, north, east)
+  return fetchWaysInBbox(south, west, north, east, signal)
 }
 
 /**

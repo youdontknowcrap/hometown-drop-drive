@@ -109,14 +109,22 @@ function responseFromBuffer(buf: BufferedResponse): Response {
  * failover middleware). Identical in-flight queries share one Promise;
  * each waiter gets an independent Response from the buffered body.
  */
-export async function overpassInterpreter(query: string): Promise<Response> {
+export async function overpassInterpreter(
+  query: string,
+  signal?: AbortSignal,
+): Promise<Response> {
   const key = query
-  const existing = overpassInflight.get(key)
-  if (existing) {
-    return responseFromBuffer(await existing)
+  // Abortable fetches skip the shared inflight map — aborting one waiter
+  // must not cancel a different tile's identical query (rare) mid-flight.
+  if (!signal) {
+    const existing = overpassInflight.get(key)
+    if (existing) {
+      return responseFromBuffer(await existing)
+    }
   }
 
   const job = (async (): Promise<BufferedResponse> => {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     const postInit: RequestInit = {
       method: 'POST',
       headers: {
@@ -124,6 +132,7 @@ export async function overpassInterpreter(query: string): Promise<Response> {
         Accept: 'application/json',
       },
       body: query,
+      signal,
     }
     const getQs = `data=${encodeURIComponent(query)}`
     const attempts: Array<{ url: string; init?: RequestInit }> = [
@@ -133,7 +142,7 @@ export async function overpassInterpreter(query: string): Promise<Response> {
       attempts.push({ url: base, init: postInit })
       attempts.push({
         url: `${base}?${getQs}`,
-        init: { headers: { Accept: 'application/json' } },
+        init: { headers: { Accept: 'application/json' }, signal },
       })
     }
     const res = await fetchFirstOk(attempts, 'Overpass')
@@ -145,11 +154,11 @@ export async function overpassInterpreter(query: string): Promise<Response> {
     }
   })()
 
-  overpassInflight.set(key, job)
+  if (!signal) overpassInflight.set(key, job)
   try {
     return responseFromBuffer(await job)
   } finally {
-    overpassInflight.delete(key)
+    if (!signal) overpassInflight.delete(key)
   }
 }
 
