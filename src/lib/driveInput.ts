@@ -110,6 +110,8 @@ let prevCruiseBtn = false
 let prevCruiseKey = false
 let prevApBtn = false
 let prevApKey = false
+let prevResetBtn = false
+let prevResetKey = false
 
 /**
  * Read navigator.getGamepads() and fold into keyboard state.
@@ -127,6 +129,7 @@ export function sampleDriveInput(keys: DriveKeys): DriveSample {
   const keyboardBack = keys.back
   let cruiseBtn = false
   let apBtn = false
+  let resetBtn = false
   let usingGamepad = false
 
   const pads =
@@ -160,6 +163,8 @@ export function sampleDriveInput(keys: DriveKeys): DriveSample {
     const lb = p.buttons[4]?.pressed ?? false
     if (p.buttons[0]?.pressed) cruiseBtn = true
     if (p.buttons[3]?.pressed) apBtn = true
+    // buttons[1] B / ○ = reset-to-road (east face — free vs A/Y used above).
+    if (p.buttons[1]?.pressed) resetBtn = true
 
     if (lt > 0.15) throttle = true
     if (rt > 0.15) brake = true
@@ -179,6 +184,12 @@ export function sampleDriveInput(keys: DriveKeys): DriveSample {
   prevApBtn = apBtn
   prevApKey = apKey
 
+  const resetKey = keys.resetToRoad
+  const resetToRoad =
+    (resetBtn && !prevResetBtn) || (resetKey && !prevResetKey)
+  prevResetBtn = resetBtn
+  prevResetKey = resetKey
+
   return {
     throttle,
     brake,
@@ -186,6 +197,7 @@ export function sampleDriveInput(keys: DriveKeys): DriveSample {
     keyboardBack,
     cruiseToggle,
     autopilotToggle,
+    resetToRoad,
     steer: clampSteer(steer),
     usingGamepad,
   }

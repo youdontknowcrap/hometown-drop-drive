@@ -9,6 +9,7 @@ import { RoadTiles } from './RoadTiles'
 import { StreetLabels } from './StreetLabels'
 import { RoadContainment } from './RoadContainment'
 import { RouteLine } from './RouteLine'
+import { Gateways } from './Gateways'
 import { FollowCam } from './FollowCam'
 import { Buildings } from './Buildings'
 import { Rain } from './Rain'
@@ -100,6 +101,8 @@ type SceneProps = {
    * false so driving never pays Text update cost.
    */
   streetNamesOn?: boolean
+  /** Nav/dest fingerprint for checkpoint gate rebuild (not streamVersion). */
+  destKey?: string
 }
 
 /**
@@ -174,6 +177,7 @@ export function Scene({
   hardContainment = true,
   loadedAabb = null,
   streetNamesOn = false,
+  destKey = 'none',
 }: SceneProps) {
   const localStreets = useMemo(
     () =>
@@ -700,6 +704,13 @@ export function Scene({
       <Suspense fallback={null}>
         <RouteLine points={drapedRoute} visible={showRoute} />
       </Suspense>
+      {/* Checkpoint archways — overlay on published polyline; no streamer fork. */}
+      <Gateways
+        path={routePath}
+        destKey={destKey}
+        visible={showRoute}
+        heightGrid={drapeGrid}
+      />
       <Rain density={weather.rain ? weather.rainDensity : 0} />
 
       <FollowCam

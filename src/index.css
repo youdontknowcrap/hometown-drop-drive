@@ -804,3 +804,38 @@ kbd {
   font-weight: 700;
   color: #ff8a80;
 }
+
+
+/* Destination checkpoint score (kid-friendly arcade). */
+.checkpoint-hud {
+  position: absolute;
+  top: 0.85rem;
+  right: 1rem;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 12px;
+  background: rgba(12, 28, 48, 0.72);
+  color: #fffde7;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+}
+.checkpoint-score {
+  font-size: 1.35rem;
+  color: #ffd54f;
+  text-shadow: 0 0 10px rgba(255, 213, 79, 0.55);
+}
+.checkpoint-gate {
+  font-size: 0.95rem;
+  color: #69f0ae;
+}
+.checkpoint-timer {
+  font-size: 0.85rem;
+  color: #81d4fa;
+  font-variant-numeric: tabular-nums;
+}

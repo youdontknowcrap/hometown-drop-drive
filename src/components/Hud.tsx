@@ -431,8 +431,9 @@ export function Hud({
             <kbd>W</kbd>
             <kbd>A</kbd>
             <kbd>S</kbd>
-            <kbd>D</kbd> drive · pad: LT gas, RT brake, LB reverse (click the
-            world or press <kbd>Esc</kbd> after typing). Set a destination
+            <kbd>D</kbd> drive · <kbd>R</kbd> / pad B reset-to-road · pad: LT
+            gas, RT brake, LB reverse (click the world or press <kbd>Esc</kbd>
+            after typing). Set a destination
             anytime. <kbd>P</kbd> / pad <strong>Y/△</strong> = autopilot (snap
             along the blue line, gas/brake set speed 0–200 mph). <kbd>C</kbd> /
             <strong>A/✕</strong> = cruise (manual cap ~110). Drive off the blue

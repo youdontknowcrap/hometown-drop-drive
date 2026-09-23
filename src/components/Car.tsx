@@ -35,6 +35,7 @@ import {
   softClampToLoadedAabb,
   type LoadedAabb,
 } from '../lib/streetTiles'
+import { nearestCenterlineOnWays } from '../lib/streetGraph'
 
 const _euler = new THREE.Euler()
 const _forward = new THREE.Vector3()
@@ -470,6 +471,30 @@ export function Car({
         tz = clamped.z
       }
     }
+
+    // Reset-to-road (KeyR / Xbox B / PS5 ○): snap onto nearest loaded pavement.
+    // LEARNING — escape buildings/void traps without tightening the 200 ft wall.
+    if (input.resetToRoad && roadSurfaceWays.length > 0) {
+      const hit = nearestCenterlineOnWays(roadSurfaceWays, tx, tz, 220)
+      if (hit) {
+        tx = hit.x
+        tz = hit.z
+        const yaw = yawFromForwardXZ(hit.dirX, hit.dirZ)
+        _euler.set(0, yaw, 0)
+        _quat.setFromEuler(_euler)
+        rb.setRotation(
+          { x: _quat.x, y: _quat.y, z: _quat.z, w: _quat.w },
+          true,
+        )
+        const gy = sampleHeight(heightGrid, tx, tz) + CAR_CLEARANCE_M
+        rb.setTranslation({ x: tx, y: gy, z: tz }, true)
+        rb.setLinvel({ x: 0, y: 0, z: 0 }, true)
+        signedMph.current = 0
+        steerAngle.current = 0
+        _forward.set(hit.dirX, 0, hit.dirZ).normalize()
+      }
+    }
+
     // --- On ribbon vs desert (soft) ---
     // Paved + track count as "road". Beyond half-width → offRoad.
     // Hard ~200 ft fence is RoadContainment — still the last-resort wall.

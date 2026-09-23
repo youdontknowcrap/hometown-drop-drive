@@ -23,6 +23,8 @@ import { autopilotControl } from './lib/autopilot'
 import { loadedWaysFingerprint, pathStaysOnRibbon } from './lib/streetGraph'
 import { createRouteAlignScheduler } from './lib/routeAlignScheduler'
 import { IntroScreen } from './components/intro/IntroScreen'
+import { CheckpointHud } from './components/CheckpointHud'
+import { resetCheckpointHud } from './lib/checkpoints'
 
 /**
  * LEARNING (Joey intro): no hardcoded Ridgecrest Drop on boot.
@@ -313,6 +315,7 @@ export default function App() {
     autopilotControl.forceOff = true
     offCourseSinceRef.current = null
     reroutingRef.current = false
+    resetCheckpointHud(Date.now())
   }, [])
 
   /**
@@ -534,6 +537,7 @@ export default function App() {
           weather={weather}
           paintHex={paintHex}
           streetNamesOn={streetNamesOn}
+          destKey={navKey}
         />
       </div>
       <Hud
@@ -585,6 +589,7 @@ export default function App() {
         onClearDestination={onClearDestination}
       />
       <Speedo />
+      <CheckpointHud />
       <GpsDash
         origin={world.origin}
         ways={localWays}
