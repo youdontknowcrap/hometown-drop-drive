@@ -51,7 +51,8 @@ const MAX_CROW_CHORD_M = 64
  * asphalt on curved residential. Near-car blue/AP must stay within this lateral
  * distance of a loaded centerline when ways exist (~8–12 m ribbon budget).
  */
-const NEAR_ON_ROAD_MAX_M = 10
+/** Public ~10 m off-ribbon reject gate (scheduler / AP / HUD share this). */
+export const NEAR_ON_ROAD_MAX_M = 10
 /** Max crow between consecutive snap hits when Dijkstra hop is unavailable. */
 const MAX_NO_HOP_CROW_M = 12
 /** Sample spacing along a candidate chord when testing "stays on asphalt". */
@@ -884,6 +885,36 @@ export function alignRouteToLoadedWays(
     publishable: true,
     kind: 'osrm-spliced',
   }
+}
+
+
+/**
+ * Pure publish gate: reject a candidate splice when any near-car chord sits
+ * > gateM off loaded centerlines. LEARNING — use everywhere a path is
+ * published (scheduler already sets publishable; this is the shared test).
+ */
+export function pathStaysOnRibbon(
+  path: XzPoint[],
+  ways: LoadedWayPoly[],
+  options: {
+    carX?: number
+    carZ?: number
+    gateM?: number
+    nearRadiusM?: number
+  } = {},
+): boolean {
+  if (path.length < 2) return false
+  const usable = ways.filter((w) => w.points.length >= 2)
+  if (usable.length === 0) return false
+  const graph = buildStreetGraph(usable)
+  if (graph.segs.length === 0) return false
+  const gate = options.gateM ?? NEAR_ON_ROAD_MAX_M
+  const nearDev = maxPathDeviationFromGraph(graph, path, {
+    carX: options.carX,
+    carZ: options.carZ,
+    nearRadiusM: options.nearRadiusM,
+  })
+  return nearDev <= gate
 }
 
 /** @deprecated Prefer AlignResult from alignRouteToLoadedWays. */

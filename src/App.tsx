@@ -20,7 +20,7 @@ import {
 } from './lib/weather'
 import { DEFAULT_PAINT } from './components/Car'
 import { autopilotControl } from './lib/autopilot'
-import { loadedWaysFingerprint } from './lib/streetGraph'
+import { loadedWaysFingerprint, pathStaysOnRibbon } from './lib/streetGraph'
 import { createRouteAlignScheduler } from './lib/routeAlignScheduler'
 import { IntroScreen } from './components/intro/IntroScreen'
 
@@ -434,6 +434,14 @@ export default function App() {
         // soft-fail thin cache). Scheduler already prefers lastGood; this gate
         // is belt-and-suspenders so blue/AP never jump to dirt mid-drive.
         if (!meta.publishable || aligned.length < 2) return
+        const carX = carPose.ready ? carPose.x : aligned[0][0]
+        const carZ = carPose.ready ? carPose.z : aligned[0][2]
+        if (
+          alignWaysRef.current.length > 0 &&
+          !pathStaysOnRibbon(aligned, alignWaysRef.current, { carX, carZ })
+        ) {
+          return
+        }
         // ONE published polyline: Scene blue RouteLine + GpsDash + AP/guidance
         // all read routeLocal. Near-car splice redraws the blue line too —
         // never AP-on-snapped / blue-on-raw split.
