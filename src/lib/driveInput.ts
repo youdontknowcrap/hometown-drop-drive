@@ -28,6 +28,7 @@
  *   A/D    steer
  *   C      cruise toggle (testing without a pad)
  *   P      autopilot toggle
+ *   R      reset-to-road (Xbox B / PS5 ○)
  *
  * Stick deadzone → δ=0 → bicycle yaw rate 0 → goes straight.
  * Holding mid-stick holds a mid turn: steer target tracks stick proportionally
@@ -70,6 +71,11 @@ export type DriveSample = {
    * Car toggles street autopilot when a destination path exists.
    */
   autopilotToggle: boolean
+  /**
+   * Rising edge: Xbox B / PS5 ○ (buttons[1]) or KeyR.
+   * Snap car to nearest loaded pavement + heading.
+   */
+  resetToRoad: boolean
   /**
    * −1 = right, +1 = left. This is the *normalized wheel angle demand* δ̂
    * (not a yaw-rate joystick). Car turns it into δ rad via wheelAngleRad().
