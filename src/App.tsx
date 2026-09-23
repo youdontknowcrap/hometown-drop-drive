@@ -598,6 +598,10 @@ export default function App() {
         liveStreetsOn={gpsLiveStreetsOn}
         onLiveStreetsOn={setGpsLiveStreetsOn}
         streamBusy={stream.busy}
+        hudTiles={stream.hudTiles}
+        worldReady={stream.activeTileCount}
+        worldWanted={stream.wantedCount}
+        worldLoading={stream.loadingCount}
       />
     </div>
   )

@@ -187,6 +187,23 @@ export type ActiveTileWays = {
   ways: StreetWay[]
 }
 
+/**
+ * GPS dial thrash viz — same TILE_M grid as streaming (not a second streamer).
+ * LEARNING (Joey): ready = live Scene+dial; loading = Overpass in flight;
+ * wanted = soft-AABB placeholder; dumped = brief flash after demote/unload.
+ */
+export type TileHudPhase = 'ready' | 'loading' | 'wanted' | 'dumped'
+
+export type TileHudCell = {
+  key: TileKey
+  tx: number
+  tz: number
+  phase: TileHudPhase
+}
+
+/** How long a demoted/unloaded tile flashes on the dial. */
+export const TILE_DUMP_FLASH_MS = 1_200
+
 export type StreamSnapshot = {
   origin: LatLng
   dropLabel: string
@@ -220,6 +237,10 @@ export type StreamSnapshot = {
   /** 0 = circle crawl, 1 = highway corridor (from last updateCar). */
   corridorBlend: number
   buildingsEnabled: boolean
+  /** wantActive size — chip denominator (ready / wanted). */
+  wantedCount: number
+  /** Dial thrash cells (ready / loading / wanted / dumped). */
+  hudTiles: TileHudCell[]
 }
 
 export function makeTileKey(tx: number, tz: number): TileKey {
@@ -401,6 +422,15 @@ export class StreetTileStreamer {
    * activeBuildings so streets/elev get the network + CPU (Joey A/B).
    */
   private buildingsEnabled = true
+  /**
+   * Brief GPS flash after a tile leaves the active set (demote or unload).
+   * Key → until performance.now() + tx/tz (tile may already be deleted).
+   */
+  private dumpedUntil = new Map<
+    TileKey,
+    { until: number; tx: number; tz: number }
+  >()
+  private dumpClearTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(origin: LatLng, dropLabel: string) {
     this.origin = origin
@@ -495,6 +525,92 @@ export class StreetTileStreamer {
       this.retryTimer = null
     }
     this.retryWakeAt = null
+    this.dumpedUntil.clear()
+    if (this.dumpClearTimer != null) {
+      clearTimeout(this.dumpClearTimer)
+      this.dumpClearTimer = null
+    }
+  }
+
+  /** GPS thrash: flash a cell that just left active (Scene + dial together). */
+  private markDumped(key: TileKey, tx: number, tz: number) {
+    const until = performance.now() + TILE_DUMP_FLASH_MS
+    this.dumpedUntil.set(key, { until, tx, tz })
+    this.scheduleDumpClear(until)
+  }
+
+  private scheduleDumpClear(until: number) {
+    if (this.disposed) return
+    // Coalesce: wake at earliest outstanding dump end (not the newest mark).
+    let wake = until
+    for (const d of this.dumpedUntil.values()) {
+      if (d.until < wake) wake = d.until
+    }
+    const wait = Math.max(50, wake - performance.now())
+    if (this.dumpClearTimer != null) {
+      clearTimeout(this.dumpClearTimer)
+    }
+    this.dumpClearTimer = setTimeout(() => {
+      this.dumpClearTimer = null
+      if (this.disposed) return
+      const now = performance.now()
+      let nextUntil: number | null = null
+      for (const [k, d] of [...this.dumpedUntil.entries()]) {
+        if (d.until <= now) this.dumpedUntil.delete(k)
+        else if (nextUntil == null || d.until < nextUntil) nextUntil = d.until
+      }
+      this.emitMeta()
+      if (nextUntil != null) this.scheduleDumpClear(nextUntil)
+    }, wait)
+  }
+
+  /**
+   * Build dial thrash cells from active / loading / wantActive / dump flash.
+   * Counts-only chip uses ready=active, wanted=wantActive, load=loading.
+   */
+  private buildHudTiles(now: number): TileHudCell[] {
+    for (const [k, d] of [...this.dumpedUntil.entries()]) {
+      if (d.until <= now) this.dumpedUntil.delete(k)
+    }
+    const cells: TileHudCell[] = []
+    const seen = new Set<TileKey>()
+
+    for (const t of this.tiles.values()) {
+      if (t.status === 'active') {
+        cells.push({ key: t.key, tx: t.tx, tz: t.tz, phase: 'ready' })
+        seen.add(t.key)
+      } else if (t.status === 'loading') {
+        cells.push({ key: t.key, tx: t.tx, tz: t.tz, phase: 'loading' })
+        seen.add(t.key)
+      }
+    }
+
+    for (const key of this.lastWantActive) {
+      if (seen.has(key)) continue
+      const t = this.tiles.get(key)
+      if (t?.status === 'loading') {
+        cells.push({ key, tx: t.tx, tz: t.tz, phase: 'loading' })
+      } else if (t) {
+        cells.push({ key, tx: t.tx, tz: t.tz, phase: 'wanted' })
+      } else {
+        const [txs, tzs] = key.split(',')
+        cells.push({
+          key,
+          tx: Number(txs),
+          tz: Number(tzs),
+          phase: 'wanted',
+        })
+      }
+      seen.add(key)
+    }
+
+    for (const [key, d] of this.dumpedUntil) {
+      if (seen.has(key)) continue // still ready/loading/wanted wins
+      cells.push({ key, tx: d.tx, tz: d.tz, phase: 'dumped' })
+    }
+
+    cells.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    return cells
   }
 
   snapshot(): StreamSnapshot {
@@ -550,6 +666,8 @@ export class StreetTileStreamer {
       queueDepth: this.queue.length,
       corridorBlend: blend,
       buildingsEnabled: this.buildingsEnabled,
+      wantedCount: this.lastWantActive.size,
+      hudTiles: this.buildHudTiles(performance.now()),
     }
   }
 
@@ -884,6 +1002,9 @@ export class StreetTileStreamer {
       // Unload only when outside the prefetch want-set AND outside car shell.
       const dCar = chebyshev(cx, cz, tile.tx, tile.tz)
       if (!wantPrefetch.has(tile.key) && dCar > PREFETCH_RING) {
+        if (tile.status === 'active') {
+          this.markDumped(tile.key, tile.tx, tile.tz)
+        }
         if (tile.ways.length > 0) this.waysMemo.set(tile.key, tile.ways)
         this.tiles.delete(tile.key)
         // Drop from queue if pending.
@@ -903,6 +1024,7 @@ export class StreetTileStreamer {
       } else if (tile.status === 'active') {
         // HARD GPS RULE: demote → disappears from Scene + GpsDash together.
         tile.status = 'cached'
+        this.markDumped(tile.key, tile.tx, tile.tz)
         changed = true
       } else if (tile.status === 'empty' || tile.status === 'error') {
         if (wantPrefetch.has(tile.key)) this.enqueue(tile.key)

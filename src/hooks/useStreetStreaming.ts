@@ -24,6 +24,7 @@ import {
   type ActiveTileWays,
   type LoadedAabb,
   type StreetTileStreamer,
+  type TileHudCell,
 } from '../lib/streetTiles'
 import type { StreetWay, StreetWorld } from '../lib/osmStreets'
 import type { BuildingBox } from '../lib/osmBuildings'
@@ -61,6 +62,10 @@ export type StreetStreamingState = {
   queueDepth: number
   /** 0 = crawl circle, 1 = highway corridor. */
   corridorBlend: number
+  /** Soft wantActive size — WORLD chip denominator. */
+  wantedCount: number
+  /** GPS dial thrash cells (ready / loading / wanted / dumped). */
+  hudTiles: TileHudCell[]
 }
 
 function worldFromStreamer(streamer: StreetTileStreamer): StreetWorld {
@@ -95,6 +100,8 @@ function stateFromStreamer(streamer: StreetTileStreamer): Omit<StreetStreamingSt
     nextQueueKey: s.nextQueueKey,
     queueDepth: s.queueDepth,
     corridorBlend: s.corridorBlend,
+    wantedCount: s.wantedCount,
+    hudTiles: s.hudTiles,
   }
 }
 
@@ -124,6 +131,8 @@ const IDLE: StreetStreamingState = {
   nextQueueKey: null,
   queueDepth: 0,
   corridorBlend: 0,
+  wantedCount: 0,
+  hudTiles: [],
 }
 
 /**

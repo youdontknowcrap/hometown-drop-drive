@@ -253,6 +253,18 @@ body,
   letter-spacing: 0.02em;
 }
 
+/* Streamer thrash counts — ready/wanted · in-flight (near GPS expand). */
+.gps-world-chip {
+  margin: 0.1rem 0 0;
+  color: rgba(178, 235, 242, 0.85);
+  font-size: 0.62rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
 /* Destination distance + expandable next-turn — readable while driving. */
 .gps-guide {
   pointer-events: auto;
