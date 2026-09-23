@@ -228,7 +228,7 @@ export function Hud({
               type="text"
               value={dropAddress}
               onChange={(e) => onDropChange(e.target.value)}
-              placeholder="e.g. 235 N China Lake Blvd, Ridgecrest CA"
+              placeholder="e.g. Main St, Springfield, IL"
               autoComplete="off"
             />
           </label>
@@ -360,7 +360,7 @@ export function Hud({
               type="text"
               value={destAddress}
               onChange={(e) => onDestChange(e.target.value)}
-              placeholder="Address while driving — e.g. Walmart Ridgecrest"
+              placeholder="Address while driving — e.g. City Hall downtown"
               autoComplete="off"
             />
           </label>
