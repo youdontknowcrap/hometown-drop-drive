@@ -17,6 +17,13 @@
  * LEARNING — never publish crow-flight to AP while ways are loaded near the
  * car. Prefer last successful spliced/OSRM path until a better near snap
  * finishes under the idle budget.
+ *
+ * LEARNING (Joey mid-drive peel-off): a rejected Dijkstra hop used to fall
+ * through to a ≤64 m crow chord between snap hits → blue left asphalt and AP
+ * look-ahead drove into dirt. Now: only accept on-graph hops or short chords
+ * that stay within ~10 m of loaded centerlines; otherwise mark the splice
+ * non-publishable so the scheduler holds last good blue (soft-fail / thin
+ * cache inclusive).
  */
 
 import type { XzPoint } from './roadMesh'
@@ -39,6 +46,17 @@ const DEFAULT_TIME_BUDGET_MS = 6
 const DEFAULT_NEAR_RADIUS_M = 480
 /** Reject hop→snap chords longer than this without an on-graph hop (meters). */
 const MAX_CROW_CHORD_M = 64
+/**
+ * LEARNING (Joey playtest peel-off): a 64 m crow between snap hits still leaves
+ * asphalt on curved residential. Near-car blue/AP must stay within this lateral
+ * distance of a loaded centerline when ways exist (~8–12 m ribbon budget).
+ */
+/** Public ~10 m off-ribbon reject gate (scheduler / AP / HUD share this). */
+export const NEAR_ON_ROAD_MAX_M = 10
+/** Max crow between consecutive snap hits when Dijkstra hop is unavailable. */
+const MAX_NO_HOP_CROW_M = 12
+/** Sample spacing along a candidate chord when testing "stays on asphalt". */
+const CHORD_SAMPLE_M = 8
 
 export type LoadedWayPoly = {
   points: XzPoint[]
@@ -196,6 +214,143 @@ export function snapToGraph(
     if (!best || d < best.dist) {
       const nodeId = t < 0.5 ? s.aId : s.bId
       best = { x: px, z: pz, dist: d, nodeId, wayIndex: s.wayIndex, t }
+    }
+  }
+  return best
+}
+
+/**
+ * Lateral distance from (x,z) to nearest graph segment (Infinity if no segs).
+ */
+export function distanceToGraph(
+  graph: StreetGraph,
+  x: number,
+  z: number,
+): number {
+  if (graph.segs.length === 0) return Infinity
+  let best = Infinity
+  for (const s of graph.segs) {
+    const abx = s.bx - s.ax
+    const abz = s.bz - s.az
+    const abLenSq = abx * abx + abz * abz
+    let t = 0
+    if (abLenSq > 1e-12) {
+      t = ((x - s.ax) * abx + (z - s.az) * abz) / abLenSq
+      t = Math.max(0, Math.min(1, t))
+    }
+    const px = s.ax + abx * t
+    const pz = s.az + abz * t
+    const d = Math.hypot(x - px, z - pz)
+    if (d < best) best = d
+  }
+  return best
+}
+
+/**
+ * True when the straight chord A→B stays within maxDist of loaded centerlines
+ * (samples along the chord). Rejects cross-lots diagonals even when endpoints
+ * each snap to asphalt.
+ */
+export function chordStaysOnGraph(
+  graph: StreetGraph,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  maxDist = NEAR_ON_ROAD_MAX_M,
+): boolean {
+  const len = Math.hypot(bx - ax, bz - az)
+  if (len < 0.5) return distanceToGraph(graph, ax, az) <= maxDist
+  const n = Math.max(1, Math.ceil(len / CHORD_SAMPLE_M))
+  for (let k = 0; k <= n; k++) {
+    const u = k / n
+    const x = ax + (bx - ax) * u
+    const z = az + (bz - az) * u
+    if (distanceToGraph(graph, x, z) > maxDist) return false
+  }
+  return true
+}
+
+/**
+ * Max lateral deviation of a polyline from the graph, optionally only for
+ * vertices inside the near-car bubble (far OSRM legs are allowed off local tiles).
+ */
+export function maxPathDeviationFromGraph(
+  graph: StreetGraph,
+  path: XzPoint[],
+  options: { carX?: number; carZ?: number; nearRadiusM?: number } = {},
+): number {
+  if (path.length === 0 || graph.segs.length === 0) return Infinity
+  const nearR = options.nearRadiusM ?? DEFAULT_NEAR_RADIUS_M
+  const carX = options.carX
+  const carZ = options.carZ
+  let worst = 0
+  for (let i = 0; i < path.length; i++) {
+    const x = path[i][0]
+    const z = path[i][2]
+    if (carX != null && carZ != null) {
+      if (Math.hypot(x - carX, z - carZ) > nearR) continue
+    }
+    const d = distanceToGraph(graph, x, z)
+    if (d > worst) worst = d
+  }
+  // Also sample midpoints of near-car segments (catches long chords).
+  for (let i = 0; i < path.length - 1; i++) {
+    const ax = path[i][0]
+    const az = path[i][2]
+    const bx = path[i + 1][0]
+    const bz = path[i + 1][2]
+    const mx = (ax + bx) * 0.5
+    const mz = (az + bz) * 0.5
+    if (carX != null && carZ != null) {
+      if (Math.hypot(mx - carX, mz - carZ) > nearR) continue
+    }
+    const d = distanceToGraph(graph, mx, mz)
+    if (d > worst) worst = d
+  }
+  return worst
+}
+
+/**
+ * Nearest centerline hit + segment tangent (for AP off-asphalt re-snap).
+ * Scans way polylines directly — no graph build (safe per-frame).
+ */
+export function nearestCenterlineOnWays(
+  ways: LoadedWayPoly[],
+  x: number,
+  z: number,
+  maxDist = SNAP_MAX_M,
+): { x: number; z: number; dist: number; dirX: number; dirZ: number } | null {
+  let best: {
+    x: number
+    z: number
+    dist: number
+    dirX: number
+    dirZ: number
+  } | null = null
+  for (const w of ways) {
+    const pts = w.points
+    for (let i = 0; i < pts.length - 1; i++) {
+      const ax = pts[i][0]
+      const az = pts[i][2]
+      const bx = pts[i + 1][0]
+      const bz = pts[i + 1][2]
+      const abx = bx - ax
+      const abz = bz - az
+      const abLenSq = abx * abx + abz * abz
+      let t = 0
+      if (abLenSq > 1e-12) {
+        t = ((x - ax) * abx + (z - az) * abz) / abLenSq
+        t = Math.max(0, Math.min(1, t))
+      }
+      const px = ax + abx * t
+      const pz = az + abz * t
+      const d = Math.hypot(x - px, z - pz)
+      if (d > maxDist) continue
+      if (!best || d < best.dist) {
+        const len = Math.hypot(abx, abz) || 1e-6
+        best = { x: px, z: pz, dist: d, dirX: abx / len, dirZ: abz / len }
+      }
     }
   }
   return best
@@ -576,6 +731,8 @@ export function alignRouteToLoadedWays(
   let lastNodeId: string | null = null
   let timedOut = false
   let snapHits = 0
+  /** True when a sample would force an off-road chord — abort splice publish. */
+  let spliceOffRoad = false
 
   for (let si = 0; si < samples.length; si++) {
     if (overBudget()) {
@@ -585,45 +742,83 @@ export function alignRouteToLoadedWays(
     const s = samples[si]
     const hit = snapToGraph(graph, s[0], s[2])
     if (!hit) {
-      // Hole in loaded ways — keep OSRM sample (road-following), not a skip gap.
+      // Hole / soft-fail thin cache: only keep OSRM if it still hugs asphalt.
+      // LEARNING — inventing a geodesic cut across a way gap peels blue mid-drive.
+      if (distanceToGraph(graph, s[0], s[2]) > NEAR_ON_ROAD_MAX_M) {
+        spliceOffRoad = true
+        break
+      }
+      const last = snapped.at(-1)
+      if (
+        last &&
+        !chordStaysOnGraph(graph, last[0], last[2], s[0], s[2], NEAR_ON_ROAD_MAX_M)
+      ) {
+        spliceOffRoad = true
+        break
+      }
       pushUnique(snapped, s[0], s[2])
       continue
     }
     snapHits++
 
+    let bridgedOnGraph = false
     if (lastNodeId && lastNodeId !== hit.nodeId && !overBudget()) {
       const hop = dijkstraPoly(graph, lastNodeId, hit.nodeId)
+      const last = snapped.at(-1)
+      const crow = last
+        ? Math.hypot(hit.x - last[0], hit.z - last[2])
+        : 0
       if (hop && hop.length > 0) {
         let hopLen = 0
-        let px = snapped.length ? snapped[snapped.length - 1][0] : hit.x
-        let pz = snapped.length ? snapped[snapped.length - 1][2] : hit.z
+        let px = last ? last[0] : hit.x
+        let pz = last ? last[2] : hit.z
         for (const p of hop) {
           hopLen += Math.hypot(p[0] - px, p[2] - pz)
           px = p[0]
           pz = p[2]
         }
-        const crow = Math.hypot(
-          hit.x - (snapped.at(-1)?.[0] ?? hit.x),
-          hit.z - (snapped.at(-1)?.[2] ?? hit.z),
-        )
         if (hopLen <= Math.max(80, crow * 2.8 + 40)) {
           for (const p of hop) pushUnique(snapped, p[0], p[2])
-        } else if (crow > MAX_CROW_CHORD_M) {
-          // LEARNING — hop rejected + long crow = would publish a diagonal
-          // cross-lots chord. Keep the OSRM sample instead of hit↔hit crow.
-          pushUnique(snapped, s[0], s[2])
-          lastNodeId = hit.nodeId
-          continue
+          bridgedOnGraph = true
         }
-      } else {
-        const crow = Math.hypot(
-          hit.x - (snapped.at(-1)?.[0] ?? hit.x),
-          hit.z - (snapped.at(-1)?.[2] ?? hit.z),
-        )
-        if (crow > MAX_CROW_CHORD_M) {
+      }
+      if (!bridgedOnGraph) {
+        // No usable hop. Only allow a *short* on-asphalt micro-skip; never the
+        // old 64 m crow fall-through (that published cross-lots chords).
+        if (
+          last &&
+          crow <= MAX_NO_HOP_CROW_M &&
+          chordStaysOnGraph(
+            graph,
+            last[0],
+            last[2],
+            hit.x,
+            hit.z,
+            NEAR_ON_ROAD_MAX_M,
+          )
+        ) {
+          // Micro-skip OK — fall through to push hit.
+        } else if (
+          last &&
+          crow <= MAX_CROW_CHORD_M &&
+          distanceToGraph(graph, s[0], s[2]) <= NEAR_ON_ROAD_MAX_M &&
+          chordStaysOnGraph(
+            graph,
+            last[0],
+            last[2],
+            s[0],
+            s[2],
+            NEAR_ON_ROAD_MAX_M,
+          )
+        ) {
+          // Prefer OSRM sample when it hugs asphalt better than hit↔hit crow.
           pushUnique(snapped, s[0], s[2])
           lastNodeId = hit.nodeId
           continue
+        } else {
+          // Would peel blue / AP into dirt — hold last good via scheduler.
+          spliceOffRoad = true
+          break
         }
       }
     }
@@ -632,12 +827,20 @@ export function alignRouteToLoadedWays(
     lastNodeId = hit.nodeId
   }
 
-  if (snapped.length < 2 || snapHits === 0) {
+  // Soft-fail / thin cache: too few snaps → do not invent a near splice.
+  if (
+    spliceOffRoad ||
+    snapped.length < 2 ||
+    snapHits === 0 ||
+    snapHits < Math.max(2, Math.floor(samples.length * 0.35))
+  ) {
     return {
       path: spine,
       timedOut,
       didLocalSnap: false,
-      publishable: true,
+      // Mid-drive: not publishable so scheduler keeps last good on-road blue.
+      // Fresh dest still has onRaw OSRM spine already painted.
+      publishable: false,
       kind: 'osrm-spine',
     }
   }
@@ -654,7 +857,23 @@ export function alignRouteToLoadedWays(
       path: spine,
       timedOut,
       didLocalSnap: false,
-      publishable: true,
+      publishable: false,
+      kind: 'osrm-spine',
+    }
+  }
+
+  // Final gate: near-car vertices + segment midpoints must hug asphalt.
+  const nearDev = maxPathDeviationFromGraph(graph, out, {
+    carX,
+    carZ,
+    nearRadiusM: nearR,
+  })
+  if (nearDev > NEAR_ON_ROAD_MAX_M) {
+    return {
+      path: spine,
+      timedOut,
+      didLocalSnap: false,
+      publishable: false,
       kind: 'osrm-spine',
     }
   }
@@ -666,6 +885,36 @@ export function alignRouteToLoadedWays(
     publishable: true,
     kind: 'osrm-spliced',
   }
+}
+
+
+/**
+ * Pure publish gate: reject a candidate splice when any near-car chord sits
+ * > gateM off loaded centerlines. LEARNING — use everywhere a path is
+ * published (scheduler already sets publishable; this is the shared test).
+ */
+export function pathStaysOnRibbon(
+  path: XzPoint[],
+  ways: LoadedWayPoly[],
+  options: {
+    carX?: number
+    carZ?: number
+    gateM?: number
+    nearRadiusM?: number
+  } = {},
+): boolean {
+  if (path.length < 2) return false
+  const usable = ways.filter((w) => w.points.length >= 2)
+  if (usable.length === 0) return false
+  const graph = buildStreetGraph(usable)
+  if (graph.segs.length === 0) return false
+  const gate = options.gateM ?? NEAR_ON_ROAD_MAX_M
+  const nearDev = maxPathDeviationFromGraph(graph, path, {
+    carX: options.carX,
+    carZ: options.carZ,
+    nearRadiusM: options.nearRadiusM,
+  })
+  return nearDev <= gate
 }
 
 /** @deprecated Prefer AlignResult from alignRouteToLoadedWays. */

@@ -17,7 +17,8 @@
  *     2) Coalesces fingerprint storms (latest wins).
  *     3) Idle-runs near-car splice under a soft time budget.
  *     4) Publishes only `publishable` results; keeps last good OSRM/spliced
- *        path when align times out or returns geodesic junk.
+ *        path when align times out, returns geodesic junk, or a near splice
+ *        would leave asphalt (soft-fail / thin cache / bad hop).
  *     5) Does NOT replace the entire OSRM course with a local-only graph path.
  */
 

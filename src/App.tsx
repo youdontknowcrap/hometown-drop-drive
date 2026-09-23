@@ -7,7 +7,7 @@ import { releaseDriveFocus, useKeyboard } from './hooks/useKeyboard'
 import { localToLatLng, polylineToLocal, type LatLng } from './lib/geo'
 import { carPose } from './lib/carPose'
 import { distanceToPath } from './lib/guidance'
-import { getDemoWorld, type StreetWorld } from './lib/osmStreets'
+import { type StreetWorld } from './lib/osmStreets'
 import { useStreetStreaming } from './hooks/useStreetStreaming'
 import { routeBetween, routeToAddress, type NavRoute } from './lib/routing'
 import { VERTICAL_EXAGGERATION } from './lib/terrarium'
@@ -20,11 +20,27 @@ import {
 } from './lib/weather'
 import { DEFAULT_PAINT } from './components/Car'
 import { autopilotControl } from './lib/autopilot'
-import { loadedWaysFingerprint } from './lib/streetGraph'
+import { loadedWaysFingerprint, pathStaysOnRibbon } from './lib/streetGraph'
 import { createRouteAlignScheduler } from './lib/routeAlignScheduler'
+import { IntroScreen } from './components/intro/IntroScreen'
+import { CheckpointHud } from './components/CheckpointHud'
+import { resetCheckpointHud } from './lib/checkpoints'
 
-const DEFAULT_DROP = '235 N China Lake Blvd, Ridgecrest, CA'
-const DEFAULT_DEST = 'Eastern Sierra Blvd, Ridgecrest, CA'
+/**
+ * LEARNING (Joey intro): no hardcoded Ridgecrest Drop on boot.
+ * Dest field starts empty too — GPS is opt-in after you land.
+ * Demo world (`getDemoWorld`) remains a streamer *fallback* only when
+ * Nominatim/Overpass fail mid-Drop — never the cold-load spawn.
+ */
+const IDLE_WORLD: StreetWorld = {
+  origin: { lat: 0, lng: 0 },
+  ways: [],
+  source: 'demo',
+  message: 'Enter an address to Drop.',
+  dropLabel: '',
+  streetMeters: 0,
+  wayCount: 0,
+}
 
 /** How far off the blue line before we start the reroute timer (meters). */
 const OFF_COURSE_M = 42
@@ -37,10 +53,15 @@ const OFF_COURSE_POLL_MS = 250
 
 export default function App() {
   const keys = useKeyboard()
-  const [dropAddress, setDropAddress] = useState(DEFAULT_DROP)
-  const [destAddress, setDestAddress] = useState(DEFAULT_DEST)
+  /**
+   * First-run phase: 'intro' = blue marble + address; 'driving' = Scene + HUD.
+   * Cold load must stay on intro until Joey submits a place (no surprise Drop).
+   */
+  const [phase, setPhase] = useState<'intro' | 'driving'>('intro')
+  const [dropAddress, setDropAddress] = useState('')
+  const [destAddress, setDestAddress] = useState('')
   const [guidanceOn, setGuidanceOn] = useState(true)
-  const [world, setWorld] = useState<StreetWorld>(() => getDemoWorld())
+  const [world, setWorld] = useState<StreetWorld>(() => IDLE_WORLD)
   /** Bumped on every Drop so the streamer restarts cleanly. */
   const [dropNonce, setDropNonce] = useState(0)
   // Slightly longer chase default — more ground rush without faking mph.
@@ -100,6 +121,27 @@ export default function App() {
     }
   }, [gpsLiveStreetsOn])
 
+  /**
+   * 3D street-name Troika labels (Joey CPU win). Default OFF — no mount while
+   * driving. Persist so a kid who turns them on keeps them after refresh.
+   */
+  const [streetNamesOn, setStreetNamesOn] = useState(() => {
+    try {
+      const v = localStorage.getItem('hdd-street-names')
+      if (v == null) return false
+      return v === '1' || v === 'true'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('hdd-street-names', streetNamesOn ? '1' : '0')
+    } catch {
+      /* private mode */
+    }
+  }, [streetNamesOn])
+
   const booted = useRef(false)
   /** Destination lat/lng kept for reroutes even while polyline updates. */
   const destRef = useRef<LatLng | null>(null)
@@ -122,7 +164,13 @@ export default function App() {
 
   // Open-world street streaming (#11). activeWays is the ONLY list Scene +
   // GpsDash may draw (hard GPS rule — no prefetch ghosts on the dial).
-  const stream = useStreetStreaming(dropAddress, dropNonce, buildingsOn)
+  // Stream only after intro → driving (enabled gate). HUD Drop still bumps nonce.
+  const stream = useStreetStreaming(
+    dropAddress,
+    dropNonce,
+    buildingsOn,
+    phase === 'driving',
+  )
 
   // Mirror streamer world into the existing `world` state so Hud / Scene keep
   // working; ways always come from active tiles only.
@@ -163,12 +211,33 @@ export default function App() {
     releaseDriveFocus()
   }, [])
 
-  useEffect(() => {
-    if (booted.current) return
-    booted.current = true
-    // Nonce 0 already started the stream via the hook; just clear focus.
+  /**
+   * Intro → driving: address already geocoded on the marble; reuse Drop path
+   * by setting dropAddress + enabling the streamer (phase flip).
+   * Streamer will geocode again inside startStreetStream — same Nominatim
+   * source of truth as HUD Drop (cheap; keeps one code path).
+   */
+  const onIntroEnter = useCallback((address: string) => {
+    setDropAddress(address)
+    setNav(null)
+    destRef.current = null
+    destLabelRef.current = ''
+    navLocalRef.current = []
+    setGpsStatus('idle')
+    setGpsMessage('')
+    setLiveWeather(null)
+    autopilotControl.forceOff = true
+    setDropNonce((n) => n + 1)
+    setPhase('driving')
     releaseDriveFocus()
   }, [])
+
+  useEffect(() => {
+    if (phase !== 'driving') return
+    if (booted.current) return
+    booted.current = true
+    releaseDriveFocus()
+  }, [phase])
 
   // Refresh live weather every ~10 min while on Auto (cheap Open-Meteo call).
   useEffect(() => {
@@ -246,6 +315,7 @@ export default function App() {
     autopilotControl.forceOff = true
     offCourseSinceRef.current = null
     reroutingRef.current = false
+    resetCheckpointHud(Date.now())
   }, [])
 
   /**
@@ -363,7 +433,18 @@ export default function App() {
             }
           : undefined,
       onAligned: (aligned, meta) => {
-        if (!meta.publishable && aligned.length < 2) return
+        // LEARNING — never publish a non-publishable splice (off-road chord /
+        // soft-fail thin cache). Scheduler already prefers lastGood; this gate
+        // is belt-and-suspenders so blue/AP never jump to dirt mid-drive.
+        if (!meta.publishable || aligned.length < 2) return
+        const carX = carPose.ready ? carPose.x : aligned[0][0]
+        const carZ = carPose.ready ? carPose.z : aligned[0][2]
+        if (
+          alignWaysRef.current.length > 0 &&
+          !pathStaysOnRibbon(aligned, alignWaysRef.current, { carX, carZ })
+        ) {
+          return
+        }
         // ONE published polyline: Scene blue RouteLine + GpsDash + AP/guidance
         // all read routeLocal. Near-car splice redraws the blue line too —
         // never AP-on-snapped / blue-on-raw split.
@@ -425,6 +506,15 @@ export default function App() {
 
   const hasDestination = nav != null
 
+  // Cold load: marble + address only. Scene/HUD mount after first Drop.
+  if (phase === 'intro') {
+    return (
+      <div className="app">
+        <IntroScreen onEnter={onIntroEnter} />
+      </div>
+    )
+  }
+
   return (
     <div className="app">
       <div className="canvas-wrap">
@@ -446,6 +536,8 @@ export default function App() {
           buildings={stream.activeBuildings}
           weather={weather}
           paintHex={paintHex}
+          streetNamesOn={streetNamesOn}
+          destKey={navKey}
         />
       </div>
       <Hud
@@ -465,6 +557,8 @@ export default function App() {
         onBuildingsOn={setBuildingsOn}
         gpsLiveStreetsOn={gpsLiveStreetsOn}
         onGpsLiveStreetsOn={setGpsLiveStreetsOn}
+        streetNamesOn={streetNamesOn}
+        onStreetNamesOn={setStreetNamesOn}
         tilesMessage={`Tiles: ${stream.activeTileCount} loaded · streaming`}
         streamMessage={stream.streamMessage}
         queueMessage={
@@ -495,6 +589,7 @@ export default function App() {
         onClearDestination={onClearDestination}
       />
       <Speedo />
+      <CheckpointHud />
       <GpsDash
         origin={world.origin}
         ways={localWays}
@@ -503,6 +598,10 @@ export default function App() {
         liveStreetsOn={gpsLiveStreetsOn}
         onLiveStreetsOn={setGpsLiveStreetsOn}
         streamBusy={stream.busy}
+        hudTiles={stream.hudTiles}
+        worldReady={stream.activeTileCount}
+        worldWanted={stream.wantedCount}
+        worldLoading={stream.loadingCount}
       />
     </div>
   )

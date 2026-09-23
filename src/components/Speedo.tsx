@@ -28,6 +28,7 @@ export function Speedo() {
   const offRoadRef = useRef<HTMLParagraphElement>(null)
   const cruiseRef = useRef<HTMLParagraphElement>(null)
   const apRef = useRef<HTMLParagraphElement>(null)
+  const failsafeRef = useRef<HTMLParagraphElement>(null)
   const capRef = useRef<HTMLParagraphElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -41,6 +42,7 @@ export function Speedo() {
         valueRef.current.textContent = String(Math.round(mph))
       }
       const apOn = carPose.ready && carPose.autopilotOn
+      const failsafe = carPose.ready && carPose.autopilotFailsafe
       const cap = apOn ? AUTOPILOT_MAX_SPEED_MPH : MAX_SPEED_MPH
       if (barRef.current) {
         const pct = Math.min(100, (mph / cap) * 100)
@@ -85,10 +87,18 @@ export function Speedo() {
           )}`
         }
       }
+      if (failsafeRef.current) {
+        failsafeRef.current.hidden = !failsafe
+        if (failsafe) {
+          failsafeRef.current.textContent =
+            carPose.autopilotFailsafeMessage || 'AP FAILED — STOPPED'
+        }
+      }
       if (rootRef.current) {
         rootRef.current.dataset.offroad = offRoad ? '1' : '0'
         rootRef.current.dataset.cruise = cruiseOn && !apOn ? '1' : '0'
         rootRef.current.dataset.ap = apOn ? '1' : '0'
+        rootRef.current.dataset.failsafe = failsafe ? '1' : '0'
       }
       raf = requestAnimationFrame(tick)
     }
@@ -103,6 +113,7 @@ export function Speedo() {
       data-offroad="0"
       data-cruise="0"
       data-ap="0"
+      data-failsafe="0"
       aria-live="polite"
       title="Speed (mph) + altitude MSL — true scale"
     >
@@ -126,6 +137,9 @@ export function Speedo() {
       </p>
       <p className="speedo-ap" ref={apRef} hidden>
         AUTOPILOT 0
+      </p>
+      <p className="speedo-failsafe" ref={failsafeRef} hidden>
+        AP FAILED — STOPPED
       </p>
       <p
         className="speedo-alt"

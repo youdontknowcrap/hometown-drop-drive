@@ -24,6 +24,7 @@ import {
   type ActiveTileWays,
   type LoadedAabb,
   type StreetTileStreamer,
+  type TileHudCell,
 } from '../lib/streetTiles'
 import type { StreetWay, StreetWorld } from '../lib/osmStreets'
 import type { BuildingBox } from '../lib/osmBuildings'
@@ -61,6 +62,10 @@ export type StreetStreamingState = {
   queueDepth: number
   /** 0 = crawl circle, 1 = highway corridor. */
   corridorBlend: number
+  /** Soft wantActive size — WORLD chip denominator. */
+  wantedCount: number
+  /** GPS dial thrash cells (ready / loading / wanted / dumped). */
+  hudTiles: TileHudCell[]
 }
 
 function worldFromStreamer(streamer: StreetTileStreamer): StreetWorld {
@@ -95,6 +100,8 @@ function stateFromStreamer(streamer: StreetTileStreamer): Omit<StreetStreamingSt
     nextQueueKey: s.nextQueueKey,
     queueDepth: s.queueDepth,
     corridorBlend: s.corridorBlend,
+    wantedCount: s.wantedCount,
+    hudTiles: s.hudTiles,
   }
 }
 
@@ -124,6 +131,8 @@ const IDLE: StreetStreamingState = {
   nextQueueKey: null,
   queueDepth: 0,
   corridorBlend: 0,
+  wantedCount: 0,
+  hudTiles: [],
 }
 
 /**
@@ -134,8 +143,26 @@ export function useStreetStreaming(
   dropAddress: string,
   dropNonce: number,
   buildingsEnabled = true,
+  /**
+   * LEARNING (intro): false while the blue-marble first-run screen is up so
+   * we never auto-startStreetStream(Ridgecrest / demo). Flip true after the
+   * kid submits an address — then Drop uses the existing Nominatim + tile path.
+   */
+  enabled = true,
 ): StreetStreamingState {
-  const [state, setState] = useState<StreetStreamingState>({ ...IDLE, busy: true })
+  const [state, setState] = useState<StreetStreamingState>(() =>
+    enabled
+      ? { ...IDLE, busy: true }
+      : {
+          ...IDLE,
+          busy: false,
+          streamMessage: 'Waiting for Drop…',
+          world: {
+            ...IDLE.world,
+            message: 'Enter an address on the intro globe to Drop.',
+          },
+        },
+  )
   const streamerRef = useRef<StreetTileStreamer | null>(null)
   const buildingsEnabledRef = useRef(buildingsEnabled)
   buildingsEnabledRef.current = buildingsEnabled
@@ -146,6 +173,22 @@ export function useStreetStreaming(
   }, [buildingsEnabled])
 
   useEffect(() => {
+    // Intro gate: stay idle — do not hit Nominatim / Overpass / demo seed.
+    if (!enabled) {
+      streamerRef.current?.dispose()
+      streamerRef.current = null
+      setState({
+        ...IDLE,
+        busy: false,
+        streamMessage: 'Waiting for Drop…',
+        world: {
+          ...IDLE.world,
+          message: 'Enter an address on the intro globe to Drop.',
+        },
+      })
+      return
+    }
+
     let cancelled = false
     let unsub: (() => void) | null = null
     let poll = 0
@@ -220,7 +263,7 @@ export function useStreetStreaming(
       streamerRef.current?.dispose()
       streamerRef.current = null
     }
-  }, [dropAddress, dropNonce])
+  }, [dropAddress, dropNonce, enabled])
 
   return state
 }

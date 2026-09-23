@@ -44,6 +44,9 @@ type HudProps = {
   /** GPS dial: paint loaded active ways (persisted). 3D streets untouched. */
   gpsLiveStreetsOn: boolean
   onGpsLiveStreetsOn: (on: boolean) => void
+  /** 3D Troika street names (default OFF — CPU win while driving). */
+  streetNamesOn: boolean
+  onStreetNamesOn: (on: boolean) => void
   /** Live or preset weather summary. */
   weatherSummary?: string
   weatherPreset: WeatherPreset
@@ -125,6 +128,8 @@ export function Hud({
   onBuildingsOn,
   gpsLiveStreetsOn,
   onGpsLiveStreetsOn,
+  streetNamesOn,
+  onStreetNamesOn,
   weatherSummary,
   weatherPreset,
   onWeatherPreset,
@@ -228,7 +233,7 @@ export function Hud({
               type="text"
               value={dropAddress}
               onChange={(e) => onDropChange(e.target.value)}
-              placeholder="e.g. 235 N China Lake Blvd, Ridgecrest CA"
+              placeholder="e.g. Main St, Springfield, IL"
               autoComplete="off"
             />
           </label>
@@ -331,6 +336,17 @@ export function Hud({
             />
             <span>Buildings {buildingsOn ? 'ON' : 'OFF'}</span>
           </label>
+          <label
+            className="toggle"
+            title="3D floating street names (Troika). Default OFF for CPU while driving."
+          >
+            <input
+              type="checkbox"
+              checked={streetNamesOn}
+              onChange={(e) => onStreetNamesOn(e.target.checked)}
+            />
+            <span>Street names {streetNamesOn ? 'ON' : 'OFF'}</span>
+          </label>
           {tilesMessage ? (
             <p className="hud-status" role="status">
               {tilesMessage}
@@ -360,7 +376,7 @@ export function Hud({
               type="text"
               value={destAddress}
               onChange={(e) => onDestChange(e.target.value)}
-              placeholder="Address while driving — e.g. Walmart Ridgecrest"
+              placeholder="Address while driving — e.g. City Hall downtown"
               autoComplete="off"
             />
           </label>
@@ -415,8 +431,9 @@ export function Hud({
             <kbd>W</kbd>
             <kbd>A</kbd>
             <kbd>S</kbd>
-            <kbd>D</kbd> drive · pad: LT gas, RT brake, LB reverse (click the
-            world or press <kbd>Esc</kbd> after typing). Set a destination
+            <kbd>D</kbd> drive · <kbd>R</kbd> / pad B reset-to-road · pad: LT
+            gas, RT brake, LB reverse (click the world or press <kbd>Esc</kbd>
+            after typing). Set a destination
             anytime. <kbd>P</kbd> / pad <strong>Y/△</strong> = autopilot (snap
             along the blue line, gas/brake set speed 0–200 mph). <kbd>C</kbd> /
             <strong>A/✕</strong> = cruise (manual cap ~110). Drive off the blue
@@ -425,8 +442,8 @@ export function Hud({
             <strong>Track-up</strong> (map swings under a fixed car chevron —
             turn left, map swings right); tap the dial badge for North-up.
             GPS <strong>▢</strong> expands the dial + deeper zoom-out (tens of
-            km); <strong>Streets ON/OFF</strong> toggles live loaded ways on
-            the dial only (3D streets stay). Destination shows remaining
+            km); <strong>Streets ON/OFF</strong> toggles all live loaded ways on
+            the dial at every zoom (3D streets stay; overlays still add). Destination shows remaining
             distance; expand <strong>Next turn</strong> for the cue.
           </p>
         </form>

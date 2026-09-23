@@ -97,16 +97,16 @@ export const PREFETCH_RING = 2
  *   Between: lerp look-ahead meters + lateral tile half-width.
  */
 export const SPEED_CIRCLE_MPH = 28
-export const SPEED_CORRIDOR_MPH = 58
+export const SPEED_CORRIDOR_MPH = 55
 
 /** Look-ahead along heading at crawl — tiny; active set stays car-centered. */
 export const LOOKAHEAD_CRAWL_M = 80
 /**
- * Look-ahead at highway. ~60 mph ≈ 27 m/s → 1600 m ≈ 60 s of runway so the
- * thin corridor promotes before soft-clamp meets a continuing road.
+ * Look-ahead at highway (≥55 mph). ~2.8 km fetch runway so Overpass stays
+ * ahead of the car; live/active set can stay small (ACTIVE_RING / corridor).
  * (Legacy name ACTIVATE_LOOKAHEAD_M kept as an alias of this highway end.)
  */
-export const LOOKAHEAD_HIGHWAY_M = 1600
+export const LOOKAHEAD_HIGHWAY_M = 2800
 /** @deprecated Use LOOKAHEAD_HIGHWAY_M — alias for older call sites / docs. */
 export const ACTIVATE_LOOKAHEAD_M = LOOKAHEAD_HIGHWAY_M
 
@@ -124,14 +124,20 @@ function lerp(a: number, b: number, t: number): number {
 
 /**
  * Cap concurrent Overpass tile fetches.
- * LEARNING — Drop neighbors fill with 1 in flight so we never burst 9 tiles
- * into applyCoordinator right after first paint. Bump to 2 only if Overpass
- * etiquette + hitch budget still feel fine.
+ * LEARNING — applyCoordinator still ≤1 React commit/RAF; this only overlaps
+ * network. 2–3 keeps the corridor ahead warm without dumping 9 meshes at once.
  */
-export const MAX_IN_FLIGHT = 1
+export const MAX_IN_FLIGHT = 2
 
 /** Minimum gap between starting Overpass tile requests. */
 export const OVERPASS_GAP_MS = 750
+
+/**
+ * Idle retry backoff for soft-failed tiles (TLS / proxy blips).
+ * Cap so a dead interpreter doesn’t hammer forever during a long drive.
+ */
+export const OVERPASS_RETRY_BASE_MS = 1_200
+export const OVERPASS_RETRY_MAX_MS = 30_000
 
 export type TileKey = string // `${tx},${tz}`
 
@@ -146,6 +152,19 @@ export type StreetTile = {
   /** OSM building AABBs for this tile (empty until deferred fetch returns). */
   buildings: BuildingBox[]
   error?: string
+  /**
+   * Soft-fail: performance.now() until which we must NOT re-enqueue.
+   * LEARNING — without this, every updateCar/reconcile stampedes retries on
+   * TLS blips and the missing-tile flicker reads as drive “jerkiness.”
+   */
+  retryAfterMs?: number
+  /** Consecutive Overpass failures for exponential idle retry. */
+  failCount?: number
+  /**
+   * True while we still show last ways but want an idle Overpass refresh
+   * (TLS blip). Must NOT flip status to loading — that would unmount Road.
+   */
+  stale?: boolean
 }
 
 /** Axis-aligned bounds of all *active* tiles in local meters. */
@@ -167,6 +186,23 @@ export type ActiveTileWays = {
   tz: number
   ways: StreetWay[]
 }
+
+/**
+ * GPS dial thrash viz — same TILE_M grid as streaming (not a second streamer).
+ * LEARNING (Joey): ready = live Scene+dial; loading = Overpass in flight;
+ * wanted = soft-AABB placeholder; dumped = brief flash after demote/unload.
+ */
+export type TileHudPhase = 'ready' | 'loading' | 'wanted' | 'dumped'
+
+export type TileHudCell = {
+  key: TileKey
+  tx: number
+  tz: number
+  phase: TileHudPhase
+}
+
+/** How long a demoted/unloaded tile flashes on the dial. */
+export const TILE_DUMP_FLASH_MS = 1_200
 
 export type StreamSnapshot = {
   origin: LatLng
@@ -201,6 +237,10 @@ export type StreamSnapshot = {
   /** 0 = circle crawl, 1 = highway corridor (from last updateCar). */
   corridorBlend: number
   buildingsEnabled: boolean
+  /** wantActive size — chip denominator (ready / wanted). */
+  wantedCount: number
+  /** Dial thrash cells (ready / loading / wanted / dumped). */
+  hudTiles: TileHudCell[]
 }
 
 export function makeTileKey(tx: number, tz: number): TileKey {
@@ -257,20 +297,37 @@ function chebyshev(ax: number, az: number, bx: number, bz: number): number {
   return Math.max(Math.abs(ax - bx), Math.abs(az - bz))
 }
 
-function unionActiveAabb(tiles: Iterable<StreetTile>): LoadedAabb | null {
+/**
+ * Soft-edge AABB = active tiles PLUS wantActive placeholders (even while
+ * Overpass still loading). LEARNING — without placeholders the soft void
+ * clamp feels like a wall on asphalt at the loaded edge while the next
+ * cell is in flight. Expanding to wantActive keeps runway, not a fence.
+ */
+function unionActiveAabb(
+  tiles: Iterable<StreetTile>,
+  wantActive?: Set<TileKey>,
+): LoadedAabb | null {
   let minX = Infinity
   let maxX = -Infinity
   let minZ = Infinity
   let maxZ = -Infinity
   let any = false
-  for (const t of tiles) {
-    if (t.status !== 'active') continue
+  const absorb = (tx: number, tz: number) => {
     any = true
-    const a = tileLocalAabb(t.tx, t.tz)
+    const a = tileLocalAabb(tx, tz)
     minX = Math.min(minX, a.minX)
     maxX = Math.max(maxX, a.maxX)
     minZ = Math.min(minZ, a.minZ)
     maxZ = Math.max(maxZ, a.maxZ)
+  }
+  for (const tile of tiles) {
+    if (tile.status === 'active') absorb(tile.tx, tile.tz)
+  }
+  if (wantActive) {
+    for (const key of wantActive) {
+      const [txs, tzs] = key.split(',')
+      absorb(Number(txs), Number(tzs))
+    }
   }
   return any ? { minX, maxX, minZ, maxZ } : null
 }
@@ -317,6 +374,13 @@ export class StreetTileStreamer {
   source: 'osm' | 'demo' = 'osm'
 
   private tiles = new Map<TileKey, StreetTile>()
+  /**
+   * Persistent ways by tile key — second visit skips Overpass (memory cache).
+   * Survives demote/unload within a Drop; cleared on dispose / new Drop.
+   */
+  private waysMemo = new Map<TileKey, StreetWay[]>()
+  /** In-flight Overpass AbortControllers — abort when key leaves wantPrefetch. */
+  private fetchControllers = new Map<TileKey, AbortController>()
   private queue: TileKey[] = []
   private inFlight = 0
   /** -Infinity so the first pump never waits on OVERPASS_GAP_MS. */
@@ -350,11 +414,23 @@ export class StreetTileStreamer {
   private gen = 0
   /** After center Drop paint, neighbors may fill (once). */
   private neighborsStarted = false
+  /** Scheduled idle pump for soft-failed tiles (cleared on dispose). */
+  private retryTimer: ReturnType<typeof setTimeout> | null = null
+  private retryWakeAt: number | null = null
   /**
    * HUD Buildings ON/OFF. When false: skip Overpass building fetches + empty
    * activeBuildings so streets/elev get the network + CPU (Joey A/B).
    */
   private buildingsEnabled = true
+  /**
+   * Brief GPS flash after a tile leaves the active set (demote or unload).
+   * Key → until performance.now() + tx/tz (tile may already be deleted).
+   */
+  private dumpedUntil = new Map<
+    TileKey,
+    { until: number; tx: number; tz: number }
+  >()
+  private dumpClearTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(origin: LatLng, dropLabel: string) {
     this.origin = origin
@@ -429,12 +505,112 @@ export class StreetTileStreamer {
     this.disposed = true
     this.gen += 1
     this.queue.length = 0
+    for (const c of this.fetchControllers.values()) {
+      try {
+        c.abort()
+      } catch {
+        /* ignore */
+      }
+    }
+    this.fetchControllers.clear()
     this.tiles.clear()
+    this.waysMemo.clear()
     this.cachedActiveWays = []
     this.cachedActiveKey = ''
     this.cachedAlignWays = []
     this.cachedAlignKey = ''
     this.listeners.clear()
+    if (this.retryTimer != null) {
+      clearTimeout(this.retryTimer)
+      this.retryTimer = null
+    }
+    this.retryWakeAt = null
+    this.dumpedUntil.clear()
+    if (this.dumpClearTimer != null) {
+      clearTimeout(this.dumpClearTimer)
+      this.dumpClearTimer = null
+    }
+  }
+
+  /** GPS thrash: flash a cell that just left active (Scene + dial together). */
+  private markDumped(key: TileKey, tx: number, tz: number) {
+    const until = performance.now() + TILE_DUMP_FLASH_MS
+    this.dumpedUntil.set(key, { until, tx, tz })
+    this.scheduleDumpClear(until)
+  }
+
+  private scheduleDumpClear(until: number) {
+    if (this.disposed) return
+    // Coalesce: wake at earliest outstanding dump end (not the newest mark).
+    let wake = until
+    for (const d of this.dumpedUntil.values()) {
+      if (d.until < wake) wake = d.until
+    }
+    const wait = Math.max(50, wake - performance.now())
+    if (this.dumpClearTimer != null) {
+      clearTimeout(this.dumpClearTimer)
+    }
+    this.dumpClearTimer = setTimeout(() => {
+      this.dumpClearTimer = null
+      if (this.disposed) return
+      const now = performance.now()
+      let nextUntil: number | null = null
+      for (const [k, d] of [...this.dumpedUntil.entries()]) {
+        if (d.until <= now) this.dumpedUntil.delete(k)
+        else if (nextUntil == null || d.until < nextUntil) nextUntil = d.until
+      }
+      this.emitMeta()
+      if (nextUntil != null) this.scheduleDumpClear(nextUntil)
+    }, wait)
+  }
+
+  /**
+   * Build dial thrash cells from active / loading / wantActive / dump flash.
+   * Counts-only chip uses ready=active, wanted=wantActive, load=loading.
+   */
+  private buildHudTiles(now: number): TileHudCell[] {
+    for (const [k, d] of [...this.dumpedUntil.entries()]) {
+      if (d.until <= now) this.dumpedUntil.delete(k)
+    }
+    const cells: TileHudCell[] = []
+    const seen = new Set<TileKey>()
+
+    for (const t of this.tiles.values()) {
+      if (t.status === 'active') {
+        cells.push({ key: t.key, tx: t.tx, tz: t.tz, phase: 'ready' })
+        seen.add(t.key)
+      } else if (t.status === 'loading') {
+        cells.push({ key: t.key, tx: t.tx, tz: t.tz, phase: 'loading' })
+        seen.add(t.key)
+      }
+    }
+
+    for (const key of this.lastWantActive) {
+      if (seen.has(key)) continue
+      const t = this.tiles.get(key)
+      if (t?.status === 'loading') {
+        cells.push({ key, tx: t.tx, tz: t.tz, phase: 'loading' })
+      } else if (t) {
+        cells.push({ key, tx: t.tx, tz: t.tz, phase: 'wanted' })
+      } else {
+        const [txs, tzs] = key.split(',')
+        cells.push({
+          key,
+          tx: Number(txs),
+          tz: Number(tzs),
+          phase: 'wanted',
+        })
+      }
+      seen.add(key)
+    }
+
+    for (const [key, d] of this.dumpedUntil) {
+      if (seen.has(key)) continue // still ready/loading/wanted wins
+      cells.push({ key, tx: d.tx, tz: d.tz, phase: 'dumped' })
+    }
+
+    cells.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    return cells
   }
 
   snapshot(): StreamSnapshot {
@@ -484,12 +660,14 @@ export class StreetTileStreamer {
         activeWays.length,
       ),
       source: this.source,
-      loadedAabb: unionActiveAabb(all),
+      loadedAabb: unionActiveAabb(all, this.lastWantActive),
       version: this.version,
       nextQueueKey: this.queue[0] ?? null,
       queueDepth: this.queue.length,
       corridorBlend: blend,
       buildingsEnabled: this.buildingsEnabled,
+      wantedCount: this.lastWantActive.size,
+      hudTiles: this.buildHudTiles(performance.now()),
     }
   }
 
@@ -583,7 +761,7 @@ export class StreetTileStreamer {
 
   /**
    * After center ways are painted: enqueue ACTIVE + PREFETCH quietly.
-   * MAX_IN_FLIGHT=1 → serial neighbor fills, no 9-mesh apply burst.
+   * MAX_IN_FLIGHT caps network; applyCoordinator still ≤1 commit/RAF.
    * Drop is crawl-shaped (blend 0) so first neighbors are the classic 3×3.
    */
   fillNeighborsAfterDrop() {
@@ -772,13 +950,43 @@ export class StreetTileStreamer {
     this.lookTx = look.tx
     this.lookTz = look.tz
 
+    // Abort Overpass for keys that left wantPrefetch — do not apply stale bbox.
+    for (const [key, ctrl] of [...this.fetchControllers.entries()]) {
+      if (wantPrefetch.has(key)) continue
+      try {
+        ctrl.abort()
+      } catch {
+        /* ignore */
+      }
+      this.fetchControllers.delete(key)
+      const live = this.tiles.get(key)
+      if (live && live.status === 'loading') {
+        live.status = 'empty'
+      }
+    }
+
     // Create empties for anything in the prefetch want-set (sorted enqueue later).
+    // Second visit: restore waysMemo → cached/active (no Overpass).
     const newKeys: TileKey[] = []
+    let changed = false
     for (const key of wantPrefetch) {
       if (this.tiles.has(key)) continue
       const [txs, tzs] = key.split(',')
       const txi = Number(txs)
       const tzi = Number(tzs)
+      const memo = this.waysMemo.get(key)
+      if (memo && memo.length > 0) {
+        this.tiles.set(key, {
+          key,
+          tx: txi,
+          tz: tzi,
+          status: wantActive.has(key) ? 'active' : 'cached',
+          ways: memo,
+          buildings: [],
+        })
+        changed = true
+        continue
+      }
       this.tiles.set(key, {
         key,
         tx: txi,
@@ -790,11 +998,14 @@ export class StreetTileStreamer {
       newKeys.push(key)
     }
 
-    let changed = false
     for (const tile of [...this.tiles.values()]) {
       // Unload only when outside the prefetch want-set AND outside car shell.
       const dCar = chebyshev(cx, cz, tile.tx, tile.tz)
       if (!wantPrefetch.has(tile.key) && dCar > PREFETCH_RING) {
+        if (tile.status === 'active') {
+          this.markDumped(tile.key, tile.tx, tile.tz)
+        }
+        if (tile.ways.length > 0) this.waysMemo.set(tile.key, tile.ways)
         this.tiles.delete(tile.key)
         // Drop from queue if pending.
         const qi = this.queue.indexOf(tile.key)
@@ -813,6 +1024,7 @@ export class StreetTileStreamer {
       } else if (tile.status === 'active') {
         // HARD GPS RULE: demote → disappears from Scene + GpsDash together.
         tile.status = 'cached'
+        this.markDumped(tile.key, tile.tx, tile.tz)
         changed = true
       } else if (tile.status === 'empty' || tile.status === 'error') {
         if (wantPrefetch.has(tile.key)) this.enqueue(tile.key)
@@ -843,6 +1055,15 @@ export class StreetTileStreamer {
     ) {
       return
     }
+    // Soft-fail cooldown — skip until idle retry window opens.
+    if (
+      tile.status === 'error' &&
+      tile.retryAfterMs != null &&
+      performance.now() < tile.retryAfterMs
+    ) {
+      this.scheduleIdleRetry(tile.retryAfterMs - performance.now())
+      return
+    }
     this.queue.push(key)
   }
 
@@ -865,6 +1086,14 @@ export class StreetTileStreamer {
       ) {
         continue
       }
+      if (
+        tile.status === 'error' &&
+        tile.retryAfterMs != null &&
+        now < tile.retryAfterMs
+      ) {
+        this.scheduleIdleRetry(tile.retryAfterMs - now)
+        continue
+      }
       this.startFetch(tile)
       this.lastStartMs = performance.now()
     }
@@ -875,9 +1104,20 @@ export class StreetTileStreamer {
    * LEARNING — emit WAYS first (driveable asphalt), buildings in a follow-up
    * emit so applyCoordinator never waits on a second Overpass for first paint
    * of that tile. Never apply 9 Road meshes in one synchronous burst — the
-   * coordinator + MAX_IN_FLIGHT=1 keep applies frame-budgeted.
+   * coordinator + MAX_IN_FLIGHT keep applies frame-budgeted.
    */
   private startFetch(tile: StreetTile) {
+    // Memory hit — second visit / race with memo restore.
+    const memo = this.waysMemo.get(tile.key)
+    if (memo && memo.length > 0) {
+      tile.ways = memo
+      tile.status = this.lastWantActive.has(tile.key) ? 'active' : 'cached'
+      tile.error = undefined
+      tile.stale = false
+      this.emit()
+      return
+    }
+
     tile.status = 'loading'
     this.inFlight += 1
     // Meta only — loading spinner must NOT bump streamVersion / remount world.
@@ -885,13 +1125,23 @@ export class StreetTileStreamer {
 
     const gen = this.gen
     const bbox = tileToBbox(tile.tx, tile.tz, this.origin)
+    const ctrl = new AbortController()
+    this.fetchControllers.set(tile.key, ctrl)
 
-    void mainFetchWays(bbox.south, bbox.west, bbox.north, bbox.east)
+    void mainFetchWays(bbox.south, bbox.west, bbox.north, bbox.east, ctrl.signal)
       .then(async (ways) => {
         if (this.disposed || gen !== this.gen) return
+        if (ctrl.signal.aborted) return
+        // Stale bbox: reconcile dropped this key from wantPrefetch.
+        if (!this.fetchControllers.has(tile.key)) return
         const live = this.tiles.get(tile.key)
         if (!live) return
         live.ways = ways
+        this.waysMemo.set(live.key, ways)
+        live.failCount = 0
+        live.retryAfterMs = undefined
+        live.error = undefined
+        live.stale = false
         // Promote against the speed-blended wantActive (corridor or circle).
         live.status = this.lastWantActive.has(live.key) ? 'active' : 'cached'
 
@@ -905,15 +1155,159 @@ export class StreetTileStreamer {
       })
       .catch((err: unknown) => {
         if (this.disposed || gen !== this.gen) return
+        const aborted =
+          (err instanceof DOMException && err.name === 'AbortError') ||
+          ctrl.signal.aborted
+        if (aborted) {
+          const live = this.tiles.get(tile.key)
+          if (live && live.status === 'loading') live.status = 'empty'
+          return
+        }
         const live = this.tiles.get(tile.key)
         if (!live) return
-        live.status = 'error'
-        live.error = err instanceof Error ? err.message : 'tile fetch failed'
-        live.ways = []
-        live.buildings = []
-        this.emit()
+        this.applySoftFail(
+          live,
+          err instanceof Error ? err.message : 'tile fetch failed',
+        )
       })
       .finally(() => {
+        this.fetchControllers.delete(tile.key)
+        this.inFlight = Math.max(0, this.inFlight - 1)
+        this.pumpQueue()
+      })
+  }
+
+  /**
+   * Soft-fail a tile after Overpass TLS/proxy blip.
+   * LEARNING — if we already painted ways, KEEP status active/cached so
+   * Scene + GpsDash + elev morph do not hitch. Never clear last geometry.
+   * Empty tiles become `error` and retry later idle (skip, don’t block).
+   */
+  private applySoftFail(live: StreetTile, message: string) {
+    const fails = (live.failCount ?? 0) + 1
+    live.failCount = fails
+    live.error = message
+    const backoff = Math.min(
+      OVERPASS_RETRY_MAX_MS,
+      OVERPASS_RETRY_BASE_MS * 2 ** Math.min(fails - 1, 5),
+    )
+    live.retryAfterMs = performance.now() + backoff
+    if (live.ways.length > 0) {
+      // Stay painted — elev / mesh keep last tiles; refresh idle later.
+      live.stale = true
+      live.status = this.lastWantActive.has(live.key) ? 'active' : 'cached'
+      console.warn(
+        `[streetTiles] soft-fail ${live.key} (keep ${live.ways.length} ways, stay ${live.status}) · retry ~${Math.round(backoff)}ms · ${message}`,
+      )
+      this.emitMeta()
+    } else {
+      live.stale = false
+      live.status = 'error'
+      console.warn(
+        `[streetTiles] soft-fail ${live.key} (empty → skip) · retry ~${Math.round(backoff)}ms · ${message}`,
+      )
+      this.emit()
+    }
+    this.scheduleIdleRetry(backoff)
+  }
+
+  /**
+   * After a soft-fail, wake once backoff elapses — without blocking elev
+   * morph / rAF. Coalesces multiple fails into one timer.
+   */
+  private scheduleIdleRetry(delayMs: number) {
+    if (this.disposed) return
+    const wait = Math.max(50, delayMs)
+    const wakeAt = performance.now() + wait
+    if (
+      this.retryTimer != null &&
+      this.retryWakeAt != null &&
+      this.retryWakeAt <= wakeAt + 1
+    ) {
+      return
+    }
+    if (this.retryTimer != null) clearTimeout(this.retryTimer)
+    this.retryWakeAt = wakeAt
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null
+      this.retryWakeAt = null
+      if (this.disposed) return
+      const now = performance.now()
+      for (const tile of this.tiles.values()) {
+        const due =
+          tile.status === 'error' ||
+          (tile.stale === true && (tile.failCount ?? 0) > 0)
+        if (!due) continue
+        if (tile.retryAfterMs != null && now < tile.retryAfterMs) {
+          this.scheduleIdleRetry(tile.retryAfterMs - now)
+          continue
+        }
+        if (tile.stale && tile.ways.length > 0) {
+          this.refreshStaleTile(tile)
+        } else {
+          this.enqueue(tile.key)
+        }
+      }
+      this.pumpQueue()
+      this.emitMeta()
+    }, wait)
+  }
+
+  /**
+   * Re-fetch a painted soft-failed tile WITHOUT flipping to `loading`
+   * (loading would drop it from activeWays → Road unmount flicker).
+   */
+  private refreshStaleTile(tile: StreetTile) {
+    if (this.disposed || this.source === 'demo') return
+    if (this.inFlight >= MAX_IN_FLIGHT) {
+      this.scheduleIdleRetry(OVERPASS_GAP_MS)
+      return
+    }
+    const now = performance.now()
+    if (now - this.lastStartMs < OVERPASS_GAP_MS) {
+      this.scheduleIdleRetry(OVERPASS_GAP_MS - (now - this.lastStartMs))
+      return
+    }
+    this.inFlight += 1
+    this.lastStartMs = performance.now()
+    this.emitMeta()
+    const gen = this.gen
+    const bbox = tileToBbox(tile.tx, tile.tz, this.origin)
+    const ctrl = new AbortController()
+    this.fetchControllers.set(tile.key, ctrl)
+    void mainFetchWays(bbox.south, bbox.west, bbox.north, bbox.east, ctrl.signal)
+      .then(async (ways) => {
+        if (this.disposed || gen !== this.gen) return
+        if (ctrl.signal.aborted || !this.fetchControllers.has(tile.key)) return
+        const live = this.tiles.get(tile.key)
+        if (!live) return
+        live.ways = ways
+        this.waysMemo.set(live.key, ways)
+        live.failCount = 0
+        live.retryAfterMs = undefined
+        live.error = undefined
+        live.stale = false
+        live.status = this.lastWantActive.has(live.key) ? 'active' : 'cached'
+        this.emit()
+        if (this.buildingsEnabled && live.buildings.length === 0) {
+          await this.deferBuildings(live, bbox, gen)
+        }
+      })
+      .catch((err: unknown) => {
+        if (this.disposed || gen !== this.gen) return
+        const aborted =
+          (err instanceof DOMException && err.name === 'AbortError') ||
+          ctrl.signal.aborted
+        if (aborted) return
+        const live = this.tiles.get(tile.key)
+        if (!live) return
+        this.applySoftFail(
+          live,
+          err instanceof Error ? err.message : 'tile refresh failed',
+        )
+      })
+      .finally(() => {
+        this.fetchControllers.delete(tile.key)
         this.inFlight = Math.max(0, this.inFlight - 1)
         this.pumpQueue()
       })
@@ -947,13 +1341,12 @@ export class StreetTileStreamer {
 }
 
 /**
- * Soft void edge: clamp ONLY when outside the union AABB of *active* tiles.
+ * Soft void edge: clamp ONLY outside union AABB of active + wantActive tiles.
  *
  * LEARNING — padM is a small OUTWARD margin (meters past the tile edge), not a
- * shrink. Never use this to fence mid-asphalt: if a road is on a loaded tile it
- * sits inside the AABB. Hitting a “wall on a road” means the next tile was not
- * active yet — fix with speed-blended corridor activate (updateCar), not a
- * tighter clamp. Replaces the hard ~200 ft corridor while streaming.
+ * shrink. wantActive placeholders expand the AABB while Overpass loads so the
+ * soft edge is not a wall-on-asphalt. Never tighten the ~200 ft corridor as a
+ * missing-tile substitute. Replaces hard corridor walls while streaming.
  */
 export function softClampToLoadedAabb(
   x: number,
@@ -1021,7 +1414,7 @@ export async function startStreetStream(dropAddress: string): Promise<{
     const streamer = new StreetTileStreamer(drop, drop.label)
     // Center only — paint roads ASAP; do not gate on the full 3×3.
     await streamer.loadCenterTileFast()
-    // Neighbors + prefetch: serial (MAX_IN_FLIGHT=1), after busy can clear.
+    // Neighbors + prefetch: capped concurrent fetches, after busy can clear.
     streamer.fillNeighborsAfterDrop()
     const snap = streamer.snapshot()
     const world: StreetWorld = {

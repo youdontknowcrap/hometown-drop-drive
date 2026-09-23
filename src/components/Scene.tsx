@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import { Canvas } from '@react-three/fiber'
+import { Canvas, useFrame } from '@react-three/fiber'
 import { Sky, PerspectiveCamera, useTexture } from '@react-three/drei'
 import { Physics } from '@react-three/rapier'
 import { Ground } from './Ground'
@@ -9,6 +9,7 @@ import { RoadTiles } from './RoadTiles'
 import { StreetLabels } from './StreetLabels'
 import { RoadContainment } from './RoadContainment'
 import { RouteLine } from './RouteLine'
+import { Gateways } from './Gateways'
 import { FollowCam } from './FollowCam'
 import { Buildings } from './Buildings'
 import { Rain } from './Rain'
@@ -31,6 +32,7 @@ import {
   VERTICAL_EXAGGERATION,
   type HeightGrid,
 } from '../lib/terrarium'
+import { createElevMorph } from '../lib/elevMorph'
 import { sunAt, sunLightPosition } from '../lib/sun'
 import type { WeatherLook } from '../lib/weather'
 import {
@@ -94,6 +96,13 @@ type SceneProps = {
   hardContainment?: boolean
   /** Soft void edge — union of active tile AABBs (local meters). */
   loadedAabb?: LoadedAabb | null
+  /**
+   * Mount Troika StreetLabels. Default OFF from App — skip entirely when
+   * false so driving never pays Text update cost.
+   */
+  streetNamesOn?: boolean
+  /** Nav/dest fingerprint for checkpoint gate rebuild (not streamVersion). */
+  destKey?: string
 }
 
 /**
@@ -105,8 +114,50 @@ type SceneProps = {
  * Terrain: Terrarium first, Open-Meteo elev fallback, quiet flat last.
  * Far LOD ring (~12 km, visual only) for distant mountain silhouette.
  * Sky/sun track Drop lat/lng + local clock; weather drives fog/rain/light.
- * Floating street-name labels (StreetLabels) billboard near the car.
+ * Optional floating street-name labels (StreetLabels) — default OFF.
  */
+
+type ElevMorph = ReturnType<typeof createElevMorph>
+
+type ElevEdgeSnap = {
+  live: HeightGrid
+  topologyGen: number
+  settleGen: number
+  blending: boolean
+}
+
+/**
+ * Runs inside Canvas so elev morph advances on the render clock.
+ * LEARNING — publish React state only on blend edges / topology / settle.
+ * During the lerp, live.heights mutate in place; Car/Ground sample that same
+ * object each frame without a setState storm (Joey animated elev adjust).
+ */
+function ElevMorphTicker({
+  morphRef,
+  onEdge,
+}: {
+  morphRef: MutableRefObject<ElevMorph | null>
+  onEdge: (snap: ElevEdgeSnap) => void
+}) {
+  const lastPub = useRef({ topo: -1, settle: -1, blending: false })
+  useFrame((_, dt) => {
+    const morph = morphRef.current
+    if (!morph) return
+    morph.tick(Math.min(dt, 0.05))
+    const { live, topologyGen, settleGen, blending } = morph.state
+    const prev = lastPub.current
+    if (
+      prev.topo !== topologyGen ||
+      prev.settle !== settleGen ||
+      prev.blending !== blending
+    ) {
+      lastPub.current = { topo: topologyGen, settle: settleGen, blending }
+      onEdge({ live, topologyGen, settleGen, blending })
+    }
+  })
+  return null
+}
+
 export function Scene({
   keys,
   origin,
@@ -125,6 +176,8 @@ export function Scene({
   paintHex,
   hardContainment = true,
   loadedAabb = null,
+  streetNamesOn = false,
+  destKey = 'none',
 }: SceneProps) {
   const localStreets = useMemo(
     () =>
@@ -185,14 +238,64 @@ export function Scene({
   ]
   const yaw = spawnRef.current?.yaw ?? 0
 
-  // Start flat so the first frame is playable; swap in hills when ready.
+  // Start flat so the first frame is playable; morph in hills when ready.
   // Span matches the Drop elev box (prefetch footprint) — not streamed ways.
-  const [heightGrid, setHeightGrid] = useState<HeightGrid>(() => {
+  const initialFlat = useMemo(() => {
     const span = TILE_M * (PREFETCH_RING + 1)
     return flatHeightGrid(0, 0, span * 2, 'Loading elevation…')
-  })
-  /** Coarse skyline mesh (~12 km); null until far fetch lands (or permanently if both paths fail). */
+  }, [])
+
+  /**
+   * LEARNING — animated elev adjust (Joey):
+   *   Worker still decodes Terrarium/Open-Meteo off-thread. Main used to
+   *   setState(HeightGrid) → Ground/FarGround/Road hard-rebuild in one frame
+   *   ("elevation adjusting" freeze + camera hitch). Now worker results feed
+   *   elevMorph.setTarget; live.heights lerp over ~520ms; Ground mutates verts
+   *   in budgeted chunks; Car pin Y lerps. React only hears topology/settle/
+   *   blend-edge publishes — Car/FollowCam/Scene stay mounted.
+   *   VERTICAL_EXAGGERATION = 1 (fidelity lock).
+   */
+  const nearMorphRef = useRef<ElevMorph | null>(createElevMorph(initialFlat))
+  const farMorphRef = useRef<ElevMorph | null>(null)
+
+  const [heightGrid, setHeightGrid] = useState<HeightGrid>(
+    () => nearMorphRef.current!.state.live,
+  )
+  /** Road/Buildings drape snapshot — identity bumps on settle only. */
+  const [drapeGrid, setDrapeGrid] = useState<HeightGrid>(
+    () => nearMorphRef.current!.state.live,
+  )
+  const [nearTopologyGen, setNearTopologyGen] = useState(0)
+  const [nearBlending, setNearBlending] = useState(false)
+
   const [farHeightGrid, setFarHeightGrid] = useState<HeightGrid | null>(null)
+  const [farTopologyGen, setFarTopologyGen] = useState(0)
+  const [farBlending, setFarBlending] = useState(false)
+
+  const onNearEdge = useMemo(
+    () => (snap: ElevEdgeSnap) => {
+      setHeightGrid(snap.live)
+      setNearTopologyGen(snap.topologyGen)
+      setNearBlending(snap.blending)
+      // Road re-drape once per settle (clone so useMemo identity changes).
+      if (!snap.blending) {
+        setDrapeGrid({
+          ...snap.live,
+          heights: new Float32Array(snap.live.heights),
+        })
+      }
+    },
+    [],
+  )
+
+  const onFarEdge = useMemo(
+    () => (snap: ElevEdgeSnap) => {
+      setFarHeightGrid(snap.live)
+      setFarTopologyGen(snap.topologyGen)
+      setFarBlending(snap.blending)
+    },
+    [],
+  )
 
   /**
    * Widened corridors for Ground / FarGround trench dig — cellSize-aware so
@@ -221,23 +324,18 @@ export function Scene({
   const ambientIntensity = weather.ambientScale * (0.35 + 0.65 * sun.daylight)
 
   /**
-   * Sliding near height grid + far skyline (worker elev decode).
+   * Sliding near height grid + far skyline (worker elev decode + morph apply).
    *
    * LEARNING — worker vs main:
    *   Terrarium PNG decode / Open-Meteo upsample run in the tile-loader worker
-   *   (CPU-bound — worth offloading). Overpass ways stay on main. Main only
-   *   setState’s the HeightGrid. Ground rebuilds verts via useMemo;
-   *   Car / FollowCam keep spawnKey=routeVersion (Drop only) — elev swaps must
-   *   NOT remount the RigidBody or camera (Joey lock).
+   *   (CPU-bound). Main morphs live heights — does NOT block rAF with a full
+   *   mesh rebuild on every apply. Car / FollowCam keep spawnKey=routeVersion
+   *   (Drop only) — elev swaps must NOT remount (Joey lock).
    *
-   * LEARNING — hitch fix (elev) + Fast Drop:
-   *   Drop paints center-tile ways first; elev follows the center AABB, then
-   *   expands as neighbors activate. Do NOT rebuild Ground on every tiny AABB
-   *   edge twitch. Debounce + only refresh when the soft-edge AABB grows by
-   *   ≥ ~½ tile vs the last fetched box (or first load). Far elev runs after
-   *   near succeeds — deferred, not competing with first paint.
-   *   lockedSpawnElevMsl keeps relative heights stable so the car Y pin does
-   *   not “pop”. VERTICAL_EXAGGERATION = 1 (fidelity lock).
+   * LEARNING — hitch fix + Fast Drop:
+   *   Debounce + significance gate on AABB growth; coalesce targets in morph;
+   *   far recenter morphs instead of hard-cutting. lockedSpawnElevMsl keeps
+   *   relative heights stable. VERTICAL_EXAGGERATION = 1.
    */
   const spawnElevLockRef = useRef<number | null>(null)
   const elevGenRef = useRef(0)
@@ -252,15 +350,26 @@ export function Scene({
     lastElevAabbRef.current = null
     elevGenRef.current += 1
     const span = TILE_M * (PREFETCH_RING + 1)
-    setHeightGrid(flatHeightGrid(0, 0, span * 2, 'Loading elevation…'))
+    const flat = flatHeightGrid(0, 0, span * 2, 'Loading elevation…')
+    if (!nearMorphRef.current) nearMorphRef.current = createElevMorph(flat)
+    else nearMorphRef.current.hardReset(flat)
+    farMorphRef.current = null
+    setHeightGrid(nearMorphRef.current.state.live)
+    setDrapeGrid({
+      ...nearMorphRef.current.state.live,
+      heights: new Float32Array(nearMorphRef.current.state.live.heights),
+    })
+    setNearTopologyGen(nearMorphRef.current.state.topologyGen)
+    setNearBlending(false)
     setFarHeightGrid(null)
+    setFarTopologyGen(0)
+    setFarBlending(false)
     onTerrainMessage?.('Loading elevation (worker · Terrarium → Open-Meteo)…')
     onFarTerrainMessage?.('Far terrain: loading…')
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Drop-only reset
   }, [routeVersion, origin.lat, origin.lng])
 
-  // Near elev: debounce + significance gate so neighbor expands don’t swap
-  // Ground every tile. First fetch is center AABB after Drop. Far elev after.
+  // Near elev: debounce + significance gate; morph target instead of hard swap.
   useEffect(() => {
     let cancelled = false
     const span = TILE_M * (PREFETCH_RING + 1)
@@ -273,7 +382,6 @@ export function Scene({
 
     const significant = (next: LoadedAabb, prev: LoadedAabb | null): boolean => {
       if (!prev) return true
-      // Refresh when soft edge grows by ≥ half a tile on any side.
       const grow = TILE_M * 0.5
       return (
         next.minX <= prev.minX - grow ||
@@ -290,17 +398,15 @@ export function Scene({
     }
 
     const gen = ++elevGenRef.current
-    // Quiet window — center Drop AABB first; neighbor expands coalesce later.
     const timer = window.setTimeout(() => {
       if (cancelled) return
-      // Re-check after debounce: another expand may have landed.
       const latest: LoadedAabb = loadedAabb ?? aabb
       if (!significant(latest, lastElevAabbRef.current) && lastElevAabbRef.current) {
         return
       }
       lastElevAabbRef.current = { ...latest }
       onTerrainMessage?.(
-        `Loading elevation (sliding · relief ${VERTICAL_EXAGGERATION}×)…`,
+        `Elevation adjusting (morph · relief ${VERTICAL_EXAGGERATION}×)…`,
       )
       void workerFetchElevNear({
         origin,
@@ -316,11 +422,11 @@ export function Scene({
         if (grid.source !== 'flat' && spawnElevLockRef.current == null) {
           spawnElevLockRef.current = grid.spawnElevMsl
         }
-        // Additive data swap — no remount keys touched.
-        setHeightGrid(grid)
+        // Morph in — no remount keys; live.heights lerp on rAF.
+        nearMorphRef.current?.setTarget(grid)
         const lane = tileLoaderUsesWorker() ? 'worker' : 'main'
         onTerrainMessage?.(
-          `${grid.message} · ${lane} · near grid follows tiles`,
+          `${grid.message} · ${lane} · morphing near grid`,
         )
 
         if (grid.source === 'flat') {
@@ -339,8 +445,14 @@ export function Scene({
         })
         if (cancelled || gen !== elevGenRef.current) return
         if (far) {
-          setFarHeightGrid(far)
-          onFarTerrainMessage?.(far.message)
+          if (!farMorphRef.current) {
+            farMorphRef.current = createElevMorph(far)
+            setFarHeightGrid(farMorphRef.current.state.live)
+            setFarTopologyGen(farMorphRef.current.state.topologyGen)
+          } else {
+            farMorphRef.current.setTarget(far)
+          }
+          onFarTerrainMessage?.(far.message + ' · morphing')
         } else {
           onFarTerrainMessage?.('Far terrain: unavailable')
         }
@@ -351,7 +463,6 @@ export function Scene({
       cancelled = true
       window.clearTimeout(timer)
     }
-    // spawn Drop-sticky; AABB edges drive the sliding window — not streamVersion.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     origin.lat,
@@ -365,7 +476,7 @@ export function Scene({
     onFarTerrainMessage,
   ])
 
-  // Far elev recenters as the car drives so distant relief becomes near.
+  // Far elev recenters as the car drives — morph/fade, don't hard cut.
   useEffect(() => {
     const id = window.setInterval(() => {
       if (!carPose.ready) return
@@ -374,7 +485,6 @@ export function Scene({
       const last = lastFarAtRef.current
       const dx = last ? carPose.x - last.x : Infinity
       const dz = last ? carPose.z - last.z : Infinity
-      // ~1.5 km travel before re-centering the ~12 km skyline ring.
       if (Math.hypot(dx, dz) < 1500) return
       const cx = carPose.x
       const cz = carPose.z
@@ -388,8 +498,14 @@ export function Scene({
       }).then((far) => {
         if (gen !== elevGenRef.current) return
         if (far) {
-          setFarHeightGrid(far)
-          onFarTerrainMessage?.(far.message + ' · follows car')
+          if (!farMorphRef.current) {
+            farMorphRef.current = createElevMorph(far)
+            setFarHeightGrid(farMorphRef.current.state.live)
+            setFarTopologyGen(farMorphRef.current.state.topologyGen)
+          } else {
+            farMorphRef.current.setTarget(far)
+          }
+          onFarTerrainMessage?.(far.message + ' · follows car · morphing')
         }
       })
     }, 2500)
@@ -401,13 +517,13 @@ export function Scene({
     () =>
       routePath.map(
         ([x, y, z]) =>
-          [x, sampleHeight(heightGrid, x, z) + Math.max(0.2, y), z] as [
+          [x, sampleHeight(drapeGrid, x, z) + Math.max(0.2, y), z] as [
             number,
             number,
             number,
           ],
       ),
-    [routePath, heightGrid],
+    [routePath, drapeGrid],
   )
 
   /**
@@ -513,8 +629,15 @@ export function Scene({
           (see App routeAlignScheduler) — long tasks look like remounts too.
       */}
       <Physics gravity={[0, -9.81, 0]} interpolate>
+        <ElevMorphTicker morphRef={nearMorphRef} onEdge={onNearEdge} />
+        <ElevMorphTicker morphRef={farMorphRef} onEdge={onFarEdge} />
         <Suspense fallback={null}>
-          <Ground heightGrid={heightGrid} roadTrenchWays={roadTrenchWays} />
+          <Ground
+            heightGrid={heightGrid}
+            roadTrenchWays={roadTrenchWays}
+            topologyGen={nearTopologyGen}
+            elevBlending={nearBlending}
+          />
         </Suspense>
         {/* spawnKey = dropNonce only — tile stream must not remount RigidBody */}
         <Car
@@ -538,14 +661,20 @@ export function Scene({
         ) : null}
         <Buildings
           boxes={driveableBuildings}
-          heightGrid={heightGrid}
+          heightGrid={drapeGrid}
           version={routeVersion}
         />
       </Physics>
       {/* Far skyline: visual only — outside Physics, own Suspense (grass tex). */}
       <Suspense fallback={null}>
         {farHeightGrid ? (
-          <FarGround nearGrid={heightGrid} farGrid={farHeightGrid} roadTrenchWays={roadTrenchWays} />
+          <FarGround
+            nearGrid={heightGrid}
+            farGrid={farHeightGrid}
+            roadTrenchWays={roadTrenchWays}
+            farTopologyGen={farTopologyGen}
+            elevBlending={farBlending || nearBlending}
+          />
         ) : null}
       </Suspense>
       {/* Per-tile asphalt — suspend here only, never Physics/Car. */}
@@ -557,13 +686,15 @@ export function Scene({
               { key: 'all', tx: 0, tz: 0, ways },
             ]
           }
-          heightGrid={heightGrid}
+          heightGrid={drapeGrid}
         />
       </Suspense>
-      {/* Troika Text font loads — own boundary so new labels never remount Car. */}
-      <Suspense fallback={null}>
-        <StreetLabels streets={localStreets} heightGrid={heightGrid} />
-      </Suspense>
+      {/* Troika Text — mount only when HUD Street names ON (default OFF = CPU win). */}
+      {streetNamesOn ? (
+        <Suspense fallback={null}>
+          <StreetLabels streets={localStreets} heightGrid={drapeGrid} />
+        </Suspense>
+      ) : null}
       {/*
         RouteLine outside Physics but MUST stay nested under Suspense: R3F
         Canvas wraps ALL children in one Suspense. Anything that suspends
@@ -573,6 +704,13 @@ export function Scene({
       <Suspense fallback={null}>
         <RouteLine points={drapedRoute} visible={showRoute} />
       </Suspense>
+      {/* Checkpoint archways — overlay on published polyline; no streamer fork. */}
+      <Gateways
+        path={routePath}
+        destKey={destKey}
+        visible={showRoute}
+        heightGrid={drapeGrid}
+      />
       <Rain density={weather.rain ? weather.rainDensity : 0} />
 
       <FollowCam

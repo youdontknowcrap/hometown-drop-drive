@@ -10,6 +10,8 @@ export type DriveKeys = {
   cruise: boolean
   /** Held KeyP — autopilot toggle is edge-detected in sampleDriveInput. */
   autopilot: boolean
+  /** Held KeyR — reset-to-road edge in sampleDriveInput. */
+  resetToRoad: boolean
 }
 
 const EMPTY: DriveKeys = {
@@ -19,6 +21,7 @@ const EMPTY: DriveKeys = {
   right: false,
   cruise: false,
   autopilot: false,
+  resetToRoad: false,
 }
 
 /** True only when the user is typing in a text field (not range/checkbox). */
@@ -78,6 +81,10 @@ function mapKey(code: string, pressed: boolean, state: DriveKeys): void {
     case 'KeyP':
       // Autopilot toggle (same as Xbox Y / PS5 △). Edge in sampleDriveInput.
       state.autopilot = pressed
+      break
+    case 'KeyR':
+      // Snap to nearest loaded pavement (void / building trap escape).
+      state.resetToRoad = pressed
       break
     default:
       break

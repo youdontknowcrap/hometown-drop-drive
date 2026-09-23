@@ -4,8 +4,6 @@ import { latLngToLocal, localToLatLng, type LatLng } from '../lib/geo'
 import type { XzPoint } from '../lib/roadMesh'
 import {
   fetchGpsOverlay,
-  keepLiveWayAtZoom,
-  preferOverlayCartography,
   wantsRegionalOverlay,
   type GpsOverlayData,
   type OverlayWay,
@@ -17,6 +15,7 @@ import {
   turnLabel,
   type GuidanceSnapshot,
 } from '../lib/turnGuidance'
+import { tileLocalAabb, type TileHudCell } from '../lib/streetTiles'
 
 /** One stroked way on the dial — highway tag drives zoom filters. */
 export type GpsWay = {
@@ -45,6 +44,15 @@ type GpsDashProps = {
    * with center-tile streets on the critical path → slow Drop / main freeze).
    */
   streamBusy?: boolean
+  /**
+   * Streamer thrash viz — same TILE_M cells as Scene (not a second streamer).
+   * Painted under live streets so Joey sees load / dump at zone edges.
+   */
+  hudTiles?: TileHudCell[]
+  /** WORLD chip: ready / wanted · in-flight (counts only). */
+  worldReady?: number
+  worldWanted?: number
+  worldLoading?: number
 }
 
 /** Compact dial size (CSS + backing store). Expanded uses SIZE_EXPANDED. */
@@ -56,12 +64,18 @@ const SIZE_EXPANDED = 300
  * Teaching: classic car GPS is local; expanded mode is a regional overview
  * (tens of km+) so majors / water / state scraps stay useful.
  */
-const DEFAULT_VIEW_METERS = 220
 const MIN_VIEW_METERS = 120
 /** Compact dial still zooms out past neighborhood (~8 km across). */
 const MAX_VIEW_COMPACT = 8_000
 /** Expanded: regional overview — tens of km+. */
 const MAX_VIEW_EXPANDED = 80_000
+/**
+ * Default = max zoom-out for compact dial (Joey: see streamer thrash).
+ * Expanded starts collapsed, so compact max is the first-load default.
+ */
+const DEFAULT_VIEW_METERS = MAX_VIEW_COMPACT
+/** Legacy first-load default — migrate once so old localStorage isn’t stuck close. */
+const LEGACY_DEFAULT_VIEW_METERS = 220
 const ZOOM_STEP = 1.4
 const ZOOM_KEY = 'hdd-gps-view-meters'
 const MAP_MODE_KEY = 'hdd-gps-map-mode'
@@ -72,13 +86,19 @@ type MapMode = 'track' | 'north'
 
 function readViewMeters(max: number): number {
   try {
-    const v = Number(localStorage.getItem(ZOOM_KEY))
+    const raw = localStorage.getItem(ZOOM_KEY)
+    if (raw == null) return Math.min(DEFAULT_VIEW_METERS, max)
+    const v = Number(raw)
+    // Migrate old close default → all-the-way-out (exact 220 only; zoom steps ≠ 220).
+    if (Number.isFinite(v) && v === LEGACY_DEFAULT_VIEW_METERS) {
+      return Math.min(DEFAULT_VIEW_METERS, max)
+    }
     if (Number.isFinite(v) && v >= MIN_VIEW_METERS && v <= max) return v
     if (Number.isFinite(v) && v > max) return max
   } catch {
     /* private mode */
   }
-  return DEFAULT_VIEW_METERS
+  return Math.min(DEFAULT_VIEW_METERS, max)
 }
 
 function writeViewMeters(m: number) {
@@ -160,6 +180,10 @@ export function GpsDash({
   liveStreetsOn = true,
   onLiveStreetsOn,
   streamBusy = false,
+  hudTiles = [],
+  worldReady = 0,
+  worldWanted = 0,
+  worldLoading = 0,
 }: GpsDashProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const coordRef = useRef<HTMLParagraphElement>(null)
@@ -189,6 +213,8 @@ export function GpsDash({
   sizeRef.current = size
   const waysRef = useRef(ways)
   waysRef.current = ways
+  const hudTilesRef = useRef(hudTiles)
+  hudTilesRef.current = hudTiles
   const routeRef = useRef(route)
   routeRef.current = route
   const originRef = useRef(origin)
@@ -408,32 +434,74 @@ export function GpsDash({
         }
       }
 
+      // --- Streamer tile thrash (under streets) — same TILE_M as streetTiles ---
+      // LEARNING (Joey): ready=live zone, amber=loading, dim=wanted empty,
+      // magenta flash=just dumped. No second streamer — reads hudTiles only.
+      {
+        const cells = hudTilesRef.current
+        if (cells.length > 0) {
+          const pulse = 0.45 + 0.35 * Math.sin(performance.now() / 220)
+          for (const cell of cells) {
+            const a = tileLocalAabb(cell.tx, cell.tz)
+            const corners: XzPoint[] = [
+              [a.minX, 0, a.minZ],
+              [a.maxX, 0, a.minZ],
+              [a.maxX, 0, a.maxZ],
+              [a.minX, 0, a.maxZ],
+            ]
+            const px = corners.map((p) =>
+              worldToPx(p[0], p[2], cx, cz, yaw, trackUp, mPerPx, half),
+            )
+            ctx.beginPath()
+            ctx.moveTo(px[0].x, px[0].y)
+            for (let i = 1; i < px.length; i++) ctx.lineTo(px[i].x, px[i].y)
+            ctx.closePath()
+            if (cell.phase === 'ready') {
+              ctx.fillStyle = 'rgba(56, 178, 172, 0.14)'
+              ctx.fill()
+              ctx.strokeStyle = 'rgba(77, 208, 225, 0.45)'
+              ctx.lineWidth = 1
+              ctx.setLineDash([])
+              ctx.stroke()
+            } else if (cell.phase === 'loading') {
+              ctx.strokeStyle = `rgba(255, 179, 0, ${pulse.toFixed(3)})`
+              ctx.lineWidth = 1.6
+              ctx.setLineDash([4, 3])
+              ctx.stroke()
+              ctx.setLineDash([])
+            } else if (cell.phase === 'wanted') {
+              ctx.strokeStyle = 'rgba(144, 164, 174, 0.35)'
+              ctx.lineWidth = 1
+              ctx.setLineDash([2, 4])
+              ctx.stroke()
+              ctx.setLineDash([])
+            } else {
+              // dumped — brief magenta edge so zone leave is obvious
+              ctx.strokeStyle = 'rgba(236, 64, 122, 0.85)'
+              ctx.lineWidth = 1.8
+              ctx.setLineDash([3, 3])
+              ctx.stroke()
+              ctx.setLineDash([])
+            }
+          }
+        }
+      }
+
       // --- Live loaded streets (load heartbeat) — toggleable ---
-      // Dual-duty: close zoom paints the stream cue; far/expanded prefers
-      // overlay majors + route + markers. If overlay majors are ready, skip
-      // live paint entirely so residential spaghetti cannot fight cartography.
-      const overlayCartography = preferOverlayCartography(
-        viewM,
-        expandedRef.current,
-      )
-      const overlayHasMajors = (ov?.majors.length ?? 0) > 0
-      const paintLive =
-        liveOn && !(overlayCartography && overlayHasMajors)
-      if (paintLive) {
+      // LEARNING (Joey): when Streets ON, paint ALL loaded/active ways at every
+      // zoom (expand + deep zoom-out included). Overlays (majors/lakes/state)
+      // still ADD at far zoom — they must not replace/hide the live street set.
+      // OFF still hides live ways. No preferOverlayCartography / keepLiveWayAtZoom
+      // cull that strips residential when zoomed out.
+      if (liveOn) {
         const liveWays = waysRef.current
         for (const w of liveWays) {
-          if (!keepLiveWayAtZoom(w.highway, viewM)) continue
           const major =
             w.highway === 'motorway' ||
             w.highway === 'trunk' ||
             w.highway === 'primary' ||
             w.highway === 'secondary'
-          // Far without overlay yet: majors-only accent (keepLiveWayAtZoom).
-          ctx.strokeStyle = overlayCartography
-            ? major
-              ? '#a8c0ce'
-              : '#5c7a8a'
-            : '#5c7a8a'
+          ctx.strokeStyle = major ? '#a8c0ce' : '#5c7a8a'
           ctx.lineWidth = major ? 1.6 : 1.15
           strokePoly(w.points, cx, cz, yaw, trackUp, mPerPx, half)
         }
@@ -577,8 +645,8 @@ export function GpsDash({
           onClick={() => onLiveStreetsOn?.(!liveStreetsOn)}
           title={
             liveStreetsOn
-              ? 'Hide live loaded streets on the dial (majors/route/overlays stay)'
-              : 'Show live loaded streets on the dial (stream load cue)'
+              ? 'Hide live loaded streets on the dial (route/overlays stay)'
+              : 'Show all live loaded streets on the dial (every zoom)'
           }
           aria-label={
             liveStreetsOn
@@ -651,6 +719,14 @@ export function GpsDash({
       </p>
       <p className="gps-zoom-meta" aria-hidden>
         {viewLabel} across
+      </p>
+      <p
+        className="gps-world-chip"
+        title="Streamer tiles: ready / wanted · in-flight Overpass (GPS thrash viz)"
+        aria-label={`World tiles ${worldReady} of ${worldWanted} ready, ${worldLoading} loading`}
+      >
+        WORLD {worldReady}/{Math.max(worldWanted, worldReady)}
+        {worldLoading > 0 ? ` · ${worldLoading} load` : ''}
       </p>
 
       {guidanceActive ? (
