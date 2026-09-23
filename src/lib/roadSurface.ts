@@ -18,8 +18,10 @@
 import type { XzPoint } from './roadMesh'
 import { widthForHighway } from './osmStreets'
 
-/** Extra meters past visual half-width so the car body still counts as "on". */
-export const ROAD_SURFACE_SLACK_M = 1.1
+/** Extra meters past visual half-width so the car body still counts as "on".
+ * Slightly generous — OSM centerlines wobble; false leave-bumps felt like
+ * a bumpy asphalt ride (Joey). Still well inside the hard ~200 ft wall. */
+export const ROAD_SURFACE_SLACK_M = 1.85
 
 /**
  * One way's centerline + half-width (meters from centerline to edge of playable

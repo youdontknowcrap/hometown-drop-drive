@@ -6,10 +6,9 @@ import { Speedo } from './components/Speedo'
 import { releaseDriveFocus, useKeyboard } from './hooks/useKeyboard'
 import { localToLatLng, polylineToLocal, type LatLng } from './lib/geo'
 import { carPose } from './lib/carPose'
-import { distanceToPath } from './lib/guidance'
 import { type StreetWorld } from './lib/osmStreets'
 import { useStreetStreaming } from './hooks/useStreetStreaming'
-import { routeBetween, routeToAddress, type NavRoute } from './lib/routing'
+import { routeToAddress, type NavRoute } from './lib/routing'
 import { VERTICAL_EXAGGERATION } from './lib/terrarium'
 import { tileLoaderUsesWorker } from './lib/tileLoaderClient'
 import {
@@ -42,14 +41,12 @@ const IDLE_WORLD: StreetWorld = {
   wayCount: 0,
 }
 
-/** How far off the blue line before we start the reroute timer (meters). */
-const OFF_COURSE_M = 42
-/** Must stay off-course this long before calling OSRM (kids swerve a lot). */
-const OFF_COURSE_HOLD_MS = 1600
-/** Minimum gap between successful reroutes so we don't spam the public API. */
-const REROUTE_COOLDOWN_MS = 4500
-/** Poll car vs path this often while a destination is active. */
-const OFF_COURSE_POLL_MS = 250
+/**
+ * JOEY LOCK — static blue course after Set destination.
+ * Off-course auto-OSRM reroute used to rewrite the published path (and gates)
+ * when the car wandered. Clear / Set NEW still rebuilds; AP failsafe may
+ * disengage without chasing a new blue line.
+ */
 
 export default function App() {
   const keys = useKeyboard()
@@ -64,9 +61,9 @@ export default function App() {
   const [world, setWorld] = useState<StreetWorld>(() => IDLE_WORLD)
   /** Bumped on every Drop so the streamer restarts cleanly. */
   const [dropNonce, setDropNonce] = useState(0)
-  // Slightly longer chase default — more ground rush without faking mph.
-  const [camDistance, setCamDistance] = useState(20)
-  const [camHeight, setCamHeight] = useState(8)
+  // Tight chase default — no speed-linked pull-out (Joey: stay close on accel).
+  const [camDistance, setCamDistance] = useState(12)
+  const [camHeight, setCamHeight] = useState(6)
 
   const [nav, setNav] = useState<NavRoute | null>(null)
   const [gpsStatus, setGpsStatus] = useState<GpsStatus>('idle')
@@ -143,14 +140,16 @@ export default function App() {
   }, [streetNamesOn])
 
   const booted = useRef(false)
-  /** Destination lat/lng kept for reroutes even while polyline updates. */
+  /** Destination lat/lng kept while polyline is frozen (Clear / new Set). */
   const destRef = useRef<LatLng | null>(null)
   const destLabelRef = useRef('')
   const navLocalRef = useRef<Array<[number, number, number]>>([])
   const originRef = useRef(world.origin)
-  const reroutingRef = useRef(false)
-  const offCourseSinceRef = useRef<number | null>(null)
-  const lastRerouteAtRef = useRef(0)
+  /**
+   * After first good publish for a dest key, freeze blue RouteLine + gates.
+   * Mid-drive tile aligns / off-route splices must NOT replace it (Joey static course).
+   */
+  const routeFrozenForNavRef = useRef<string | null>(null)
 
   useEffect(() => {
     originRef.current = world.origin
@@ -292,8 +291,6 @@ export default function App() {
       const next = await routeToAddress(carLatLng(), q)
       applyNav(next, 'ready')
       setGuidanceOn(true)
-      lastRerouteAtRef.current = performance.now()
-      offCourseSinceRef.current = null
     } catch (err) {
       const why = err instanceof Error ? err.message : 'unknown error'
       setGpsStatus('error')
@@ -313,8 +310,7 @@ export default function App() {
     setGuidanceOn(false)
     // Drop AP with the blue line — Car reads forceOff next frame.
     autopilotControl.forceOff = true
-    offCourseSinceRef.current = null
-    reroutingRef.current = false
+    routeFrozenForNavRef.current = null
     resetCheckpointHud(Date.now())
   }, [])
 
@@ -365,10 +361,10 @@ export default function App() {
    *
    * Correct publish rules:
    *   1) New dest → paint full OSRM immediately (long-haul GPS).
-   *   2) Idle near-car splice onto active+cached ways (asphalt under tires).
-   *   3) Far ahead stays untouched OSRM — never align-only graph path.
+   *   2) One near-car splice onto loaded ways (optional, before freeze).
+   *   3) FREEZE after first good publish — no mid-drive re-align / re-OSRM.
    *   4) Never publish straight-fallback geodesic to AP when ways exist.
-   *   5) Budget timeout keeps last good OSRM/spliced spine (no mid-drive wipe).
+   *   5) Clear / Set NEW dest resets freeze and rebuilds gates with the path.
    * Does NOT remount Car (path prop only; remount guards from hang fix stay).
    */
   const waysFingerprint = useMemo(
@@ -407,12 +403,27 @@ export default function App() {
     if (routeLocalRaw.length < 2) {
       setRouteLocal([])
       navLocalRef.current = []
+      routeFrozenForNavRef.current = null
       prevNavKeyRef.current = navKey
       return
     }
-    const fp = `${navKey}|${waysFingerprint}`
     const navChanged = prevNavKeyRef.current !== navKey
     prevNavKeyRef.current = navKey
+    if (navChanged) {
+      // New Set destination — allow one OSRM paint + optional near splice, then freeze.
+      routeFrozenForNavRef.current = null
+    }
+    // WHY freeze: Joey wants a static course + gates after Set. Mid-drive
+    // waysFingerprint storms / off-route align must NOT replace the published
+    // blue line. Clear / new Set still rebuilds (navChanged resets freeze).
+    if (
+      !navChanged &&
+      routeFrozenForNavRef.current === navKey &&
+      navLocalRef.current.length >= 2
+    ) {
+      return
+    }
+    const fp = `${navKey}|${waysFingerprint}`
     const osrm = nav?.source === 'osrm'
     const waysNear = alignWaysRef.current.length > 0
     alignSchedulerRef.current?.schedule({
@@ -433,6 +444,13 @@ export default function App() {
             }
           : undefined,
       onAligned: (aligned, meta) => {
+        // Already froze this dest — ignore late idle splices.
+        if (
+          routeFrozenForNavRef.current === navKey &&
+          navLocalRef.current.length >= 2
+        ) {
+          return
+        }
         // LEARNING — never publish a non-publishable splice (off-road chord /
         // soft-fail thin cache). Scheduler already prefers lastGood; this gate
         // is belt-and-suspenders so blue/AP never jump to dirt mid-drive.
@@ -446,63 +464,18 @@ export default function App() {
           return
         }
         // ONE published polyline: Scene blue RouteLine + GpsDash + AP/guidance
-        // all read routeLocal. Near-car splice redraws the blue line too —
-        // never AP-on-snapped / blue-on-raw split.
+        // + gates. Freeze after first good publish so mid-drive aligns do not
+        // chase the car or rebuild checkpoints (Joey static course).
         setRouteLocal(aligned)
         navLocalRef.current = aligned
+        // First good publish freezes — further idle splices must not chase the car.
+        routeFrozenForNavRef.current = navKey
       },
     })
   }, [routeLocalRaw, waysFingerprint, navKey, nav?.source])
 
-  // Debounced off-course → OSRM reroute from the car to the same destination.
-  useEffect(() => {
-    if (!nav) return
-
-    const tick = () => {
-      if (!destRef.current || reroutingRef.current) return
-      if (!carPose.ready) return
-
-      const path = navLocalRef.current
-      if (path.length < 2) return
-
-      const dist = distanceToPath(carPose.x, carPose.z, path)
-      const now = performance.now()
-
-      if (dist > OFF_COURSE_M) {
-        if (offCourseSinceRef.current == null) {
-          offCourseSinceRef.current = now
-        }
-        const held = now - offCourseSinceRef.current
-        const cooled = now - lastRerouteAtRef.current >= REROUTE_COOLDOWN_MS
-        if (held >= OFF_COURSE_HOLD_MS && cooled) {
-          reroutingRef.current = true
-          setGpsStatus('rerouting')
-          setGpsMessage('Rerouting…')
-          const from = localToLatLng(carPose.x, carPose.z, originRef.current)
-          const dest = destRef.current
-          const label = destLabelRef.current || 'destination'
-          void routeBetween(from, dest, label)
-            .then((next) => {
-              applyNav(next, 'ready')
-              lastRerouteAtRef.current = performance.now()
-              offCourseSinceRef.current = null
-            })
-            .catch(() => {
-              setGpsStatus('ready')
-              setGpsMessage('Reroute failed — keeping the old path.')
-            })
-            .finally(() => {
-              reroutingRef.current = false
-            })
-        }
-      } else {
-        offCourseSinceRef.current = null
-      }
-    }
-
-    const id = window.setInterval(tick, OFF_COURSE_POLL_MS)
-    return () => window.clearInterval(id)
-  }, [nav, applyNav])
+  // Off-course auto-OSRM reroute REMOVED (Joey static blue line).
+  // AP failsafe may still disengage on unsafe look-ahead without rewriting path.
 
   const hasDestination = nav != null
 

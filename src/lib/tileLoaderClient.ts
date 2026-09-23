@@ -34,6 +34,7 @@ import {
 } from './osmBuildings'
 import type { FarTerrainFetchOpts, HeightGrid, TerrainFetchOpts } from './terrarium'
 import { fetchElevationGrid, fetchFarElevationGrid } from './elevation'
+import { beginElevNetwork, endElevNetwork } from './networkPriority'
 
 export type MainBuildingsResult = {
   boxes: BuildingBox[]
@@ -203,23 +204,34 @@ export async function workerFetchBuildings(
 export async function workerFetchElevNear(
   opts: TerrainFetchOpts,
 ): Promise<HeightGrid> {
-  const res = await post({ type: 'elevNear', opts })
-  if (!res.ok || res.type !== 'elevNear') {
-    throw new Error(!res.ok ? res.error : 'unexpected response')
+  // Elev holds the network lane — Overpass tile pumps yield (Joey priority).
+  beginElevNetwork()
+  try {
+    const res = await post({ type: 'elevNear', opts })
+    if (!res.ok || res.type !== 'elevNear') {
+      throw new Error(!res.ok ? res.error : 'unexpected response')
+    }
+    const grid = reviveGrid(res.result.grid)
+    if (!grid) throw new Error('elevNear returned null grid')
+    return grid
+  } finally {
+    endElevNetwork()
   }
-  const grid = reviveGrid(res.result.grid)
-  if (!grid) throw new Error('elevNear returned null grid')
-  return grid
 }
 
 export async function workerFetchElevFar(
   opts: FarTerrainFetchOpts,
 ): Promise<HeightGrid | null> {
-  const res = await post({ type: 'elevFar', opts })
-  if (!res.ok || res.type !== 'elevFar') {
-    throw new Error(!res.ok ? res.error : 'unexpected response')
+  beginElevNetwork()
+  try {
+    const res = await post({ type: 'elevFar', opts })
+    if (!res.ok || res.type !== 'elevFar') {
+      throw new Error(!res.ok ? res.error : 'unexpected response')
+    }
+    return reviveGrid(res.result.grid)
+  } finally {
+    endElevNetwork()
   }
-  return reviveGrid(res.result.grid)
 }
 
 /** True once the elev worker constructed (for HUD / console teaching). */

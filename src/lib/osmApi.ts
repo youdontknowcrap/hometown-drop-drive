@@ -49,7 +49,7 @@ async function fetchFirstOk(
       // 429 / 504 / 502 from Overpass — treat as transient, back off.
       const transientHttp = res.status === 429 || res.status >= 500
       lastErr = new Error(`${label} failed (${res.status})`)
-      console.warn(`[osmApi] ${label} ${res.status} via ${url}`)
+      // Quiet mid-failover — no per-mirror console spam (Joey).
       if (transientHttp && i + 1 < attempts.length) {
         const wait = Math.min(8_000, 400 * 2 ** i)
         await sleep(wait)
@@ -57,7 +57,6 @@ async function fetchFirstOk(
       }
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err))
-      console.warn(`[osmApi] ${label} error via ${url}:`, lastErr.message)
       if (isTransientNetworkError(err) && i + 1 < attempts.length) {
         const wait = Math.min(8_000, 500 * 2 ** i)
         await sleep(wait)
@@ -65,6 +64,10 @@ async function fetchFirstOk(
       }
     }
   }
+  // One line only when every attempt failed (not each hop).
+  console.warn(
+    `[osmApi] ${label} unreachable: ${lastErr?.message ?? 'unknown'}`,
+  )
   throw lastErr ?? new Error(`${label} unreachable`)
 }
 

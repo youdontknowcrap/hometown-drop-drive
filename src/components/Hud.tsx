@@ -436,8 +436,8 @@ export function Hud({
             after typing). Set a destination
             anytime. <kbd>P</kbd> / pad <strong>Y/△</strong> = autopilot (snap
             along the blue line, gas/brake set speed 0–200 mph). <kbd>C</kbd> /
-            <strong>A/✕</strong> = cruise (manual cap ~110). Drive off the blue
-            line and GPS will reroute. Clear = free drive. Hide this panel with{' '}
+            <strong>A/✕</strong> = cruise (manual cap ~110). Blue line stays the course you Set
+            (no auto-reroute). Clear = free drive. Hide this panel with{' '}
             <kbd>H</kbd> / <kbd>[</kbd>. Bottom-right GPS defaults to{' '}
             <strong>Track-up</strong> (map swings under a fixed car chevron —
             turn left, map swings right); tap the dial badge for North-up.

@@ -72,6 +72,10 @@ import {
 } from './osmStreets'
 import { mainFetchBuildings, mainFetchWays } from './tileLoaderClient'
 import {
+  elevHoldsOverpassLane,
+  onElevNetworkReleased,
+} from './networkPriority'
+import {
   mergeActiveBuildingBoxes,
   MAX_BUILDINGS,
   MAX_BUILDINGS_PER_TILE,
@@ -431,10 +435,16 @@ export class StreetTileStreamer {
     { until: number; tx: number; tz: number }
   >()
   private dumpClearTimer: ReturnType<typeof setTimeout> | null = null
+  /** Unsubscribe elev-lane wake (Overpass yields while elev fetches). */
+  private unsubElevWake: (() => void) | null = null
 
   constructor(origin: LatLng, dropLabel: string) {
     this.origin = origin
     this.dropLabel = dropLabel
+    // When elev releases the network lane, resume Overpass pumps.
+    this.unsubElevWake = onElevNetworkReleased(() => {
+      if (!this.disposed) this.pumpQueue()
+    })
   }
 
   subscribe(fn: () => void): () => void {
@@ -504,6 +514,10 @@ export class StreetTileStreamer {
   dispose() {
     this.disposed = true
     this.gen += 1
+    if (this.unsubElevWake) {
+      this.unsubElevWake()
+      this.unsubElevWake = null
+    }
     this.queue.length = 0
     for (const c of this.fetchControllers.values()) {
       try {
@@ -1069,6 +1083,13 @@ export class StreetTileStreamer {
 
   private pumpQueue() {
     if (this.disposed || this.source === 'demo') return
+    // WHY yield: elev/ground ahead of Overpass when contended (Joey). Do not
+    // starve forever — elevHoldsOverpassLane() opens after OVERPASS_YIELD_MAX_MS.
+    // Drop center fetch bypasses this pump (critical path). Never block applyCoordinator.
+    if (elevHoldsOverpassLane()) {
+      this.scheduleIdleRetry(200)
+      return
+    }
     this.sortQueue()
     const now = performance.now()
     while (
@@ -1194,18 +1215,13 @@ export class StreetTileStreamer {
     live.retryAfterMs = performance.now() + backoff
     if (live.ways.length > 0) {
       // Stay painted — elev / mesh keep last tiles; refresh idle later.
+      // Quiet: routine TLS/mirror blips must not spam console/HUD (Joey).
       live.stale = true
       live.status = this.lastWantActive.has(live.key) ? 'active' : 'cached'
-      console.warn(
-        `[streetTiles] soft-fail ${live.key} (keep ${live.ways.length} ways, stay ${live.status}) · retry ~${Math.round(backoff)}ms · ${message}`,
-      )
       this.emitMeta()
     } else {
       live.stale = false
       live.status = 'error'
-      console.warn(
-        `[streetTiles] soft-fail ${live.key} (empty → skip) · retry ~${Math.round(backoff)}ms · ${message}`,
-      )
       this.emit()
     }
     this.scheduleIdleRetry(backoff)

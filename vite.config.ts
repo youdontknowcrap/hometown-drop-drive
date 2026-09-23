@@ -129,31 +129,25 @@ async function proxyOverpass(
       const ct = upstream.headers.get('content-type')
       if (ct) res.setHeader('Content-Type', ct)
       res.setHeader('X-Overpass-Mirror', mirror)
-      if (i > 0) {
-        console.info(
-          `[vite overpass] failover ok via ${mirror} (tried ${i} earlier)`,
-        )
-      }
+      // Quiet on success — even failover. Joey was hella spammed by mirror logs.
       res.end(buf)
       return
     } catch (err) {
       clearTimeout(timer)
       lastErr = err instanceof Error ? err : new Error(String(err))
-      const blip = isTlsOrNetworkBlip(err)
-      console.warn(
-        `[vite overpass] ${blip ? 'TLS/network blip' : 'error'} on ${mirror}: ${lastErr.message}${
-          i + 1 < OVERPASS_MIRRORS.length ? ' → trying next mirror' : ''
-        }`,
-      )
-      if (!blip && i === 0) {
-        // Non-network (e.g. abort after logic bug) — still try mirrors once.
-      }
+      // Quiet mid-failover: soft-fail + keep-last-ways handle the blip.
+      // No "TLS/network blip → trying next mirror" spam (Joey).
+      void isTlsOrNetworkBlip(err)
     }
   }
 
   res.statusCode = 502
   res.setHeader('Content-Type', 'application/json')
   res.setHeader('X-Overpass-Proxy-Error', 'all-mirrors-failed')
+  // Only log when every mirror failed — once per request, not per hop.
+  console.warn(
+    `[vite overpass] all mirrors failed: ${lastErr?.message ?? 'unknown'}`,
+  )
   res.end(
     JSON.stringify({
       error: 'All Overpass mirrors failed',

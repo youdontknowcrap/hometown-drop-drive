@@ -85,6 +85,13 @@ export function createRouteAlignScheduler(
   let lastPublishedFp = ''
   /** Last publishable path — prefer over geodesic / timed-out junk. */
   let lastGood: XzPoint[] | null = null
+  /**
+   * WHY freeze: Joey wants a static blue course + gates after Set destination.
+   * After the first publishable path for a trip, mid-drive fingerprint aligns
+   * (tile stream / off-route) must NOT replace the published polyline.
+   * Cleared only when schedule() paints a new dest via onRaw (or dispose).
+   */
+  let frozenAfterPublish = false
 
   const clearArms = () => {
     if (coalesceTimer) {
@@ -134,6 +141,8 @@ export function createRouteAlignScheduler(
     if (result.publishable && result.path.length >= 2) {
       lastGood = result.path.map((p) => [p[0], 0, p[2]] as XzPoint)
       job.onAligned(lastGood, result)
+      // Freeze after first good publish — no mid-drive chase splices.
+      frozenAfterPublish = true
       if (!result.timedOut) {
         lastPublishedFp = job.fingerprint
         pending = null
@@ -189,6 +198,7 @@ export function createRouteAlignScheduler(
         pending = null
         lastPublishedFp = ''
         lastGood = null
+        frozenAfterPublish = false
         job.onAligned([], {
           path: [],
           timedOut: false,
@@ -212,6 +222,10 @@ export function createRouteAlignScheduler(
       if (job.onRaw) {
         lastGood = job.rawIsStreetFollowing === false ? null : rawCopy
         lastPublishedFp = ''
+        frozenAfterPublish = false
+      } else if (frozenAfterPublish) {
+        // Mid-drive tile/off-route align — keep frozen published path (Joey).
+        return
       }
 
       pending = {
@@ -249,6 +263,7 @@ export function createRouteAlignScheduler(
       disposed = true
       pending = null
       lastGood = null
+      frozenAfterPublish = false
       clearArms()
     },
   }

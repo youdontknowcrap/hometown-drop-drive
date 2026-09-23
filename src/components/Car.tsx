@@ -53,6 +53,16 @@ const LEAVE_BUMP_DURATION_S = 0.42
 const LEAVE_BUMP_PEAK_M = 1.45
 /** Instant mph chop when the curb hits — sells the thump with the vertical bump. */
 const LEAVE_BUMP_SPEED_KEEP = 0.82
+/**
+ * Frames off-ribbon before edge-trigger leave bump.
+ * LEARNING — active-tile way lists flicker as the streamer swaps; without
+ * hysteresis one missed frame fires the curb thump on asphalt (Joey bumpy).
+ */
+const OFF_ROAD_BUMP_FRAMES = 10
+/** Soft Y follow rate (1/s) — slower than before so elev morph / seams don't pop. */
+const GROUND_Y_FOLLOW_RATE = 6
+/** Cap vertical step per frame (meters) — kills elev-grid spikes. */
+const GROUND_Y_MAX_STEP_M = 0.28
 
 /**
  * Escape hatch — "stuck like a fly".
@@ -308,6 +318,8 @@ export function Car({
   const odometer = useRef({ x: spawn[0], z: spawn[2], acc: 0, t: 0, last: 0 })
   /** Edge-detect leave asphalt: was on ribbon last frame? */
   const wasOnRoad = useRef(true)
+  /** Consecutive frames off asphalt — hysteresis for leave bump. */
+  const offRoadFrames = useRef(0)
   /** Seconds left in the leave-bump half-sine (0 = idle). */
   const leaveBumpT = useRef(0)
   /** Consecutive frames: authored speed but almost no world XZ move. */
@@ -414,6 +426,7 @@ export function Car({
     signedMph.current = 0
     steerAngle.current = 0
     wasOnRoad.current = true
+    offRoadFrames.current = 0
     leaveBumpT.current = 0
     wedgeFrames.current = 0
     prevXZ.current = { x: spawn[0], z: spawn[2] }
@@ -528,13 +541,24 @@ export function Car({
       leaveBumpT.current = 0
     }
 
-    // Edge-trigger: only fire the arcade jolt when we *leave* the ribbon.
+    // Edge-trigger with hysteresis: only fire after sustained off-ribbon.
     // Autopilot owns the route and must not inherit the manual off-road bump.
-    if (wasOnRoad.current && !onRoad && !cmd.skipOffRoadPenalty) {
+    if (onRoad || cmd.skipOffRoadPenalty) {
+      offRoadFrames.current = 0
+    } else {
+      offRoadFrames.current += 1
+    }
+    const sustainOff =
+      !onRoad &&
+      !cmd.skipOffRoadPenalty &&
+      offRoadFrames.current >= OFF_ROAD_BUMP_FRAMES
+    if (wasOnRoad.current && sustainOff) {
       leaveBumpT.current = LEAVE_BUMP_DURATION_S
       signedMph.current *= LEAVE_BUMP_SPEED_KEEP
+      wasOnRoad.current = false
+    } else if (onRoad || cmd.skipOffRoadPenalty) {
+      wasOnRoad.current = true
     }
-    wasOnRoad.current = onRoad
 
     // Sticky dirt: yank toward 55 mph when the soft penalty applies.
     if (!onRoad && !cmd.skipOffRoadPenalty) {
@@ -561,8 +585,13 @@ export function Car({
     // ease wantY so a settle edge / topology slide does not pop the body.
     let groundY = sampleHeight(heightGrid, tx, tz)
     let wantYTarget = groundY + CAR_CLEARANCE_M
-    const yLerp = 1 - Math.exp(-12 * Math.min(dt, 0.05))
+    const dtY = Math.min(dt, 0.05)
+    const yLerp = 1 - Math.exp(-GROUND_Y_FOLLOW_RATE * dtY)
     let wantY = t.y + (wantYTarget - t.y) * yLerp
+    // Clamp vertical step so elev-grid seams / morph edges don't buck the car.
+    const dy = wantY - t.y
+    if (dy > GROUND_Y_MAX_STEP_M) wantY = t.y + GROUND_Y_MAX_STEP_M
+    else if (dy < -GROUND_Y_MAX_STEP_M) wantY = t.y - GROUND_Y_MAX_STEP_M
 
     // Leave-bump: half-sine lift so the curb thump reads even with Y pinned.
     if (leaveBumpT.current > 0 && !cmd.skipOffRoadPenalty) {
@@ -628,7 +657,12 @@ export function Car({
       // not a realistic turning radius at 200 mph.
       // Re-sample height at the slid pose so hills stay under the tires.
       groundY = sampleHeight(heightGrid, apFollow.x, apFollow.z)
-      const apY = groundY + CAR_CLEARANCE_M
+      const apYTarget = groundY + CAR_CLEARANCE_M
+      // Lerp AP Y too — hard set used to spike FollowCam lookAt (Joey jerk).
+      let apY = t.y + (apYTarget - t.y) * yLerp
+      const apDy = apY - t.y
+      if (apDy > GROUND_Y_MAX_STEP_M) apY = t.y + GROUND_Y_MAX_STEP_M
+      else if (apDy < -GROUND_Y_MAX_STEP_M) apY = t.y - GROUND_Y_MAX_STEP_M
       _forward.set(apFollow.dirX, 0, apFollow.dirZ).normalize()
       const yaw = yawFromForwardXZ(apFollow.dirX, apFollow.dirZ)
       _euler.set(0, yaw, 0)
